@@ -9,4 +9,8 @@
     <Platform Solution="*|x64" Project="x64" />
     <Platform Solution="*|X86" Project="X86" />
   </Project>
+  <Project Path="ThreadShelf.Core/ThreadShelf.Core.csproj" />
+  <Project Path="ThreadShelf.Cli/ThreadShelf.Cli.csproj" />
+  <Project Path="ThreadShelf.Mcp/ThreadShelf.Mcp.csproj" />
+  <Project Path="tests/ThreadShelf.Tests/ThreadShelf.Tests.csproj" />
 </Solution>

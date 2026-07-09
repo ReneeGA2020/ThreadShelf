@@ -10,7 +10,7 @@ using System.Text.RegularExpressions;
 
 namespace ThreadShelf;
 
-internal sealed record ThreadMetadata
+public sealed record ThreadMetadata
 {
     public string Folder { get; init; } = "";
     public List<string> Tags { get; init; } = [];
@@ -19,7 +19,7 @@ internal sealed record ThreadMetadata
     public DateTimeOffset? UpdatedAt { get; init; }
 }
 
-internal sealed record TagDefinition
+public sealed record TagDefinition
 {
     public const string DefaultColor = "#0969DA";
 
@@ -28,7 +28,7 @@ internal sealed record TagDefinition
     public string Description { get; init; } = "";
 }
 
-internal sealed record CodexThread
+public sealed record CodexThread
 {
     public string Id { get; init; } = "";
     public string Title { get; init; } = "";
@@ -48,7 +48,7 @@ internal sealed record CodexThread
     public string TagsText => Metadata.Tags.Count == 0 ? "" : string.Join(", ", Metadata.Tags);
 }
 
-internal sealed record ThreadShelfSnapshot
+public sealed record ThreadShelfSnapshot
 {
     public IReadOnlyList<CodexThread> Threads { get; init; } = [];
     public IReadOnlyList<TagDefinition> Tags { get; init; } = [];
@@ -80,16 +80,16 @@ internal sealed record ThreadShelfSnapshot
         };
 }
 
-internal sealed record FolderSummary(string Name, int Count);
-internal sealed record TagSummary(TagDefinition Definition, int Count);
+public sealed record FolderSummary(string Name, int Count);
+public sealed record TagSummary(TagDefinition Definition, int Count);
 
-internal sealed record EditDraft(string Folder, string Notes, bool Favorite)
+public sealed record EditDraft(string Folder, string Notes, bool Favorite)
 {
     public static EditDraft From(ThreadMetadata metadata) =>
         new(metadata.Folder, metadata.Notes, metadata.Favorite);
 }
 
-internal static class ThreadFilters
+public static class ThreadFilters
 {
     public const string All = "__all";
     public const string Favorites = "__favorites";
@@ -177,7 +177,7 @@ internal static class ThreadFilters
     }
 }
 
-internal sealed class ThreadShelfRepository
+public sealed class ThreadShelfRepository
 {
     private static readonly Regex SessionIdRegex = new(
         "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",

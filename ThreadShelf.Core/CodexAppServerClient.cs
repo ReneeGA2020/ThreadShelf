@@ -7,7 +7,7 @@ using System.Text.Json;
 
 namespace ThreadShelf;
 
-internal sealed class CodexAppServerClient : IDisposable
+public sealed class CodexAppServerClient : IDisposable
 {
     private const int DefaultTimeoutMs = 30000;
     private const int PageSize = 250;
@@ -376,4 +376,4 @@ internal sealed class CodexAppServerClient : IDisposable
     }
 }
 
-internal sealed record AppServerThreadIndex(string CodexHome, IReadOnlyList<CodexThread> Threads);
+public sealed record AppServerThreadIndex(string CodexHome, IReadOnlyList<CodexThread> Threads);

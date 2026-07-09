@@ -17,14 +17,36 @@ it keeps its own sidecar index.
   with descriptions, a dedicated tag manager, tag/note search, native
   archive/unarchive and rename through the CLI app-server, and
   `codex://threads/{id}` deep links back into the Codex app.
+- Includes a reusable `ThreadShelf.Core` command surface plus `ThreadShelf.Cli`
+  and `ThreadShelf.Mcp` executables for AI-friendly automation.
 - Does not write folders, tags, notes, or favorites into Codex-owned state.
-- Includes an AI automation interface plan in `docs/ai-interface.md` covering a
-  future CLI/MCP surface, data model, permissions, and error format.
+- Documents the AI automation surface in `docs/ai-interface.md`, including data
+  model, permissions, commands, MCP tools, and error format.
 
 ## Run
 
 ```powershell
 dotnet run --project src
+```
+
+## CLI
+
+```powershell
+dotnet run --project ThreadShelf.Cli -- threads list --json
+dotnet run --project ThreadShelf.Cli -- threads search "follow up" --json
+dotnet run --project ThreadShelf.Cli -- tags create --name bug --color "#D1242F" --yes --json
+```
+
+All commands accept `--codex-home <path>` and `--json`. Mutations require
+`--yes`.
+
+## MCP
+
+`ThreadShelf.Mcp` is a stdio JSON-RPC MCP server exposing the stable tools from
+`docs/ai-interface.md`.
+
+```powershell
+dotnet run --project ThreadShelf.Mcp
 ```
 
 ## Codex CLI dependency

@@ -10,7 +10,19 @@ using Microsoft.UI.Xaml.Controls;
 using ThreadShelf;
 using static Microsoft.UI.Reactor.Factories;
 
-ReactorApp.Run<App>("ThreadShelf", width: 1180, height: 760);
+ReactorApp.Run(_ =>
+{
+    ReactorApp.OpenWindow(
+        new WindowSpec
+        {
+            Title = "ThreadShelf",
+            Width = 1180,
+            Height = 760,
+            MinWidth = 980,
+            MinHeight = 560
+        },
+        () => new App());
+});
 
 class App : Component
 {
@@ -1071,7 +1083,8 @@ class App : Component
         }
 
         return Border(
-                FlexColumn(
+                (ScrollViewer(
+                    FlexColumn(
                     BodyStrong("Thread").Flex(shrink: 0),
                     If(
                         supportsNativeActions,
@@ -1120,24 +1133,21 @@ class App : Component
                         .AcceptsReturn()
                         .TextWrapping()
                         .MinHeight(118)
-                        .Flex(grow: 1, basis: 0),
+                        .Flex(shrink: 0),
                     If(
                         supportsNativeActions,
-                        () => Button(thread.IsArchived ? "Unarchive" : "Archive", ToggleArchive)
+                        () => DetailsButton(thread.IsArchived ? "Unarchive" : "Archive", ToggleArchive)
                             .AutomationName(thread.IsArchived ? "Unarchive thread" : "Archive thread")
                             .AutomationId("ArchiveToggleButton")
-                            .SubtleButton()
                             .HAlign(HorizontalAlignment.Stretch)
                             .Flex(shrink: 0),
                         () => Empty()),
                     FlexRow(
-                        Button("Open", OpenInCodex)
+                        DetailsButton("Open", OpenInCodex)
                             .AutomationId("OpenInCodexButton")
-                            .SubtleButton()
                             .Flex(grow: 1, basis: 0),
-                        Button("Reveal", RevealJsonl)
+                        DetailsButton("Reveal", RevealJsonl)
                             .AutomationId("RevealFileButton")
-                            .SubtleButton()
                             .Flex(grow: 1, basis: 0))
                     with
                     {
@@ -1147,7 +1157,13 @@ class App : Component
                 with
                 {
                     RowGap = 10
+                }) with
+                {
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto
                 })
+                .AutomationId("DetailsScrollViewer")
+                .Flex(grow: 1, basis: 0))
             .Padding(16)
             .CornerRadius(8)
             .Background(Theme.LayerFill)
@@ -1220,16 +1236,33 @@ class App : Component
                         {
                             RowGap = 8
                         }),
-                Button("Manage tags", openTagManager)
+                DetailsButton("Manage tags", openTagManager)
                     .AutomationName("Open tag manager")
                     .AutomationId("OpenTagManagerButton")
-                    .SubtleButton()
                     .HAlign(HorizontalAlignment.Stretch))
             with
             {
                 RowGap = 8
             };
     }
+
+    private static ButtonElement DetailsButton(string label, Action action) =>
+        Button(label, action)
+            .AutomationName(label)
+            .SubtleButton()
+            .Resources(resources => resources
+                .Set("ButtonBackground", Theme.Ref("ControlFillColorDefaultBrush"))
+                .Set("ButtonBackgroundPointerOver", Theme.Ref("ControlFillColorSecondaryBrush"))
+                .Set("ButtonBackgroundPressed", Theme.Ref("ControlFillColorTertiaryBrush"))
+                .Set("ButtonBackgroundDisabled", Theme.Ref("SubtleFillColorDisabledBrush"))
+                .Set("ButtonForeground", Theme.PrimaryText)
+                .Set("ButtonForegroundPointerOver", Theme.PrimaryText)
+                .Set("ButtonForegroundPressed", Theme.PrimaryText)
+                .Set("ButtonForegroundDisabled", Theme.Ref("TextFillColorDisabledBrush"))
+                .Set("ButtonBorderBrush", Theme.ControlStroke)
+                .Set("ButtonBorderBrushPointerOver", Theme.ControlStrokeSecondary)
+                .Set("ButtonBorderBrushPressed", Theme.ControlStrokeSecondary)
+                .Set("ButtonBorderBrushDisabled", Theme.Ref("ControlStrokeColorDefaultBrush")));
 
     private static Element RenderTagManagerPage(
         IReadOnlyList<CodexThread> threads,

@@ -42,6 +42,10 @@
     <!-- </snippet:template-shape> -->
 
     <ItemGroup>
+        <ProjectReference Include="..\ThreadShelf.Core\ThreadShelf.Core.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
         <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.2-experimental9" />
         <PackageReference Include="Microsoft.UI.Reactor" Version="0.1.0-preview.11" />
     </ItemGroup>

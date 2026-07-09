@@ -1,9 +1,10 @@
 # AI Interface Design
 
-ThreadShelf should expose an automation surface that is safe by default,
-scriptable from terminals, and easy for AI assistants to discover through MCP.
-The first implementation should be a CLI library/core plus a thin MCP server
-that reuses the same command handlers.
+ThreadShelf exposes an automation surface that is safe by default, scriptable
+from terminals, and easy for AI assistants to discover through MCP. The current
+implementation uses a shared `ThreadShelf.Core` command surface plus thin
+`ThreadShelf.Cli` and `ThreadShelf.Mcp` executables that reuse the same command
+handlers.
 
 ## Goals
 
@@ -187,6 +188,20 @@ ThreadShelf.Cli
 ThreadShelf.Mcp
   MCP server using the same handlers
 ```
+
+## Implementation Status
+
+The first implementation is present in:
+
+- `ThreadShelf.Core`: repository, models, validation, command handlers, and
+  stable JSON result/error envelopes.
+- `ThreadShelf.Cli`: `threadshelf` executable commands with `--json`,
+  `--codex-home`, and `--yes`.
+- `ThreadShelf.Mcp`: stdio JSON-RPC MCP server with the stable tool names above
+  and input schemas.
+- `tests/ThreadShelf.Tests`: temporary `CODEX_HOME` tests covering list/search,
+  metadata patch, tag rename migration, tag delete cleanup, fallback behavior,
+  and unsupported native-action errors.
 
 ## MVP Plan
 
