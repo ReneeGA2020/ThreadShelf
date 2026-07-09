@@ -14,6 +14,9 @@ ReactorApp.Run<App>("ThreadShelf", width: 1180, height: 760);
 
 class App : Component
 {
+    private const string ThreadsPage = "threads";
+    private const string TagsPage = "tags";
+
     private sealed record ThreadDragPayload(string ThreadId);
     private sealed record TagEditorDraft(string EditingName, string Name, string Color, string Description)
     {
@@ -31,6 +34,8 @@ class App : Component
         var (draft, setDraft) = UseState<EditDraft?>(null);
         var (titleDraft, setTitleDraft) = UseState("");
         var (tagEditor, setTagEditor) = UseState(TagEditorDraft.Empty);
+        var (activePage, setActivePage) = UseState(ThreadsPage);
+        var (pendingDeleteTag, setPendingDeleteTag) = UseState("");
         var (status, setStatus) = UseState("");
         var snapshotVersion = snapshot?.LoadedAt.UtcTicks ?? 0L;
 
@@ -92,13 +97,17 @@ class App : Component
         var threads = snapshot?.Threads ?? [];
         var tags = snapshot?.Tags ?? [];
         var filtered = ThreadFilters.Apply(threads, selectedFilter, query, selectedTag);
-        var selectedThread = threads.FirstOrDefault(thread =>
+        var selectedThread = filtered.FirstOrDefault(thread =>
                 thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
             ?? filtered.FirstOrDefault()
+            ?? threads.FirstOrDefault(thread =>
+                thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
             ?? threads.FirstOrDefault();
         var activeDraft = selectedThread is null
             ? null
-            : draft ?? EditDraft.From(selectedThread.Metadata);
+            : selectedThread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase)
+                ? draft ?? EditDraft.From(selectedThread.Metadata)
+                : EditDraft.From(selectedThread.Metadata);
 
         UseEffect(() =>
         {
@@ -114,6 +123,51 @@ class App : Component
             setSelectedId(thread.Id);
             setDraft(EditDraft.From(thread.Metadata));
             setTitleDraft(thread.Title);
+        }
+
+        UseEffect(() =>
+        {
+            if (snapshot is null
+                || !activePage.Equals(ThreadsPage, StringComparison.OrdinalIgnoreCase)
+                || filtered.Count == 0
+                || filtered.Any(thread => thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            SelectThread(filtered[0]);
+        }, snapshotVersion, selectedFilter, selectedTag, query, selectedId, activePage);
+
+        void SelectFilter(string filter)
+        {
+            setSelectedFilter(filter);
+            setActivePage(ThreadsPage);
+            var next = ThreadFilters.Apply(threads, filter, query, selectedTag).FirstOrDefault();
+            if (next is not null)
+            {
+                SelectThread(next);
+            }
+        }
+
+        void SelectTagFilter(string tag)
+        {
+            setSelectedTag(tag);
+            setActivePage(ThreadsPage);
+            var next = ThreadFilters.Apply(threads, selectedFilter, query, tag).FirstOrDefault();
+            if (next is not null)
+            {
+                SelectThread(next);
+            }
+        }
+
+        void ShowThreads()
+        {
+            setActivePage(ThreadsPage);
+        }
+
+        void ShowTagManager()
+        {
+            setActivePage(TagsPage);
         }
 
         void SaveThreadMetadata(CodexThread thread, ThreadMetadata metadata, string successMessage)
@@ -238,6 +292,7 @@ class App : Component
                     setSelectedTag(definition.Name);
                 }
 
+                setPendingDeleteTag("");
                 setTagEditor(TagEditorDraft.Empty);
                 Reload();
                 setStatus(tagEditor.EditingName.Length == 0
@@ -247,6 +302,38 @@ class App : Component
             catch (Exception ex)
             {
                 setStatus($"Tag save failed: {ex.Message}");
+            }
+        }
+
+        void DeleteTagDefinition(string name)
+        {
+            var tagName = ThreadShelfRepository.NormalizeTagName(name);
+            if (tagName.Length == 0)
+            {
+                setStatus("Tag delete failed: name cannot be empty");
+                return;
+            }
+
+            try
+            {
+                repository.DeleteTagDefinition(tagName);
+                if (tagName.Equals(selectedTag, StringComparison.OrdinalIgnoreCase))
+                {
+                    setSelectedTag("");
+                }
+
+                if (tagName.Equals(tagEditor.EditingName, StringComparison.OrdinalIgnoreCase))
+                {
+                    setTagEditor(TagEditorDraft.Empty);
+                }
+
+                setPendingDeleteTag("");
+                Reload();
+                setStatus($"Deleted tag {tagName}");
+            }
+            catch (Exception ex)
+            {
+                setStatus($"Tag delete failed: {ex.Message}");
             }
         }
 
@@ -293,48 +380,76 @@ class App : Component
                 : $"{threads.Count:N0} indexed threads via {snapshot.DataSource}")
             .Flex(shrink: 0);
 
-        var body = snapshot is null
-            ? RenderLoading(status)
-            : FlexRow(
-                RenderSidebar(
-                    threads,
-                    tags,
-                    selectedFilter,
-                    setSelectedFilter,
-                    selectedTag,
-                    setSelectedTag,
-                    MoveThreadToFolder,
-                    snapshot.SidecarPath),
-                RenderThreadList(
-                    filtered,
-                    tags,
-                    selectedThread?.Id ?? "",
-                    query,
-                    setQuery,
-                    SelectThread,
-                    Reload,
-                    status),
-                RenderDetails(
-                    selectedThread,
-                    activeDraft,
-                    titleDraft,
-                    setDraft,
-                    setTitleDraft,
-                    SaveDraft,
-                    tags,
-                    tagEditor,
-                    setTagEditor,
-                    ToggleThreadTag,
-                    SaveTagDefinition,
-                    ToggleArchived,
-                    RenameThread,
-                    snapshot.SupportsNativeActions,
-                    setStatus)
-            ) with
-            {
-                ColumnGap = 16,
-                AlignItems = FlexAlign.Stretch
-            };
+        Element body;
+        if (snapshot is null)
+        {
+            body = RenderLoading(status);
+        }
+        else
+        {
+            var sidebar = RenderSidebar(
+                threads,
+                tags,
+                activePage,
+                ShowThreads,
+                ShowTagManager,
+                selectedFilter,
+                SelectFilter,
+                selectedTag,
+                SelectTagFilter,
+                MoveThreadToFolder,
+                snapshot.SidecarPath);
+
+            body = activePage.Equals(TagsPage, StringComparison.OrdinalIgnoreCase)
+                ? FlexRow(
+                    sidebar,
+                    RenderTagManagerPage(
+                        threads,
+                        tags,
+                        tagEditor,
+                        setTagEditor,
+                        SaveTagDefinition,
+                        pendingDeleteTag,
+                        setPendingDeleteTag,
+                        DeleteTagDefinition,
+                        ShowThreads,
+                        status))
+                    with
+                    {
+                        ColumnGap = 16,
+                        AlignItems = FlexAlign.Stretch
+                    }
+                : FlexRow(
+                    sidebar,
+                    RenderThreadList(
+                        filtered,
+                        tags,
+                        selectedThread?.Id ?? "",
+                        query,
+                        setQuery,
+                        SelectThread,
+                        Reload,
+                        status),
+                    RenderDetails(
+                        selectedThread,
+                        activeDraft,
+                        titleDraft,
+                        setDraft,
+                        setTitleDraft,
+                        SaveDraft,
+                        tags,
+                        ToggleThreadTag,
+                        ShowTagManager,
+                        ToggleArchived,
+                        RenameThread,
+                        snapshot.SupportsNativeActions,
+                        setStatus))
+                    with
+                    {
+                        ColumnGap = 16,
+                        AlignItems = FlexAlign.Stretch
+                    };
+        }
 
         return FlexColumn(
                 titleBar,
@@ -361,6 +476,9 @@ class App : Component
     private static Element RenderSidebar(
         IReadOnlyList<CodexThread> threads,
         IReadOnlyList<TagDefinition> tags,
+        string activePage,
+        Action showThreads,
+        Action showTagManager,
         string selectedFilter,
         Action<string> selectFilter,
         string selectedTag,
@@ -389,6 +507,12 @@ class App : Component
 
         return Border(
                 FlexColumn(
+                    BodyStrong("View").Flex(shrink: 0),
+                    PageButton(ThreadsPage, "Threads", activePage, showThreads)
+                        .AutomationId("View_Threads"),
+                    PageButton(TagsPage, "Tag manager", activePage, showTagManager)
+                        .AutomationId("View_TagManager"),
+                    Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 8, 0, 4),
                     BodyStrong("Folders").Flex(shrink: 0),
                     FilterButton(ThreadFilters.All, $"All ({threads.Count:N0})", selectedFilter, selectFilter)
                         .AutomationId("Filter_All"),
@@ -427,6 +551,56 @@ class App : Component
             .Background(Theme.LayerFill)
             .WithBorder(Theme.CardStroke, 1)
             .Flex(basis: 230, shrink: 0);
+    }
+
+    private static Element PageButton(
+        string value,
+        string label,
+        string activePage,
+        Action select)
+    {
+        var selected = value.Equals(activePage, StringComparison.OrdinalIgnoreCase);
+        return Button(label, select)
+            .AutomationName(label)
+            .HAlign(HorizontalAlignment.Stretch)
+            .Set(button => button.HorizontalContentAlignment = HorizontalAlignment.Stretch)
+            .Resources(resources => resources
+                .Set(
+                    "ButtonBackground",
+                    selected
+                        ? Theme.Ref("AccentFillColorDefaultBrush")
+                        : Theme.Ref("SubtleFillColorTransparentBrush"))
+                .Set(
+                    "ButtonBackgroundPointerOver",
+                    selected
+                        ? Theme.Ref("AccentFillColorSecondaryBrush")
+                        : Theme.Ref("SubtleFillColorSecondaryBrush"))
+                .Set(
+                    "ButtonBackgroundPressed",
+                    selected
+                        ? Theme.Ref("AccentFillColorTertiaryBrush")
+                        : Theme.Ref("SubtleFillColorTertiaryBrush"))
+                .Set(
+                    "ButtonForeground",
+                    selected
+                        ? Theme.Ref("TextOnAccentFillColorPrimaryBrush")
+                        : Theme.PrimaryText)
+                .Set(
+                    "ButtonForegroundPointerOver",
+                    selected
+                        ? Theme.Ref("TextOnAccentFillColorPrimaryBrush")
+                        : Theme.PrimaryText)
+                .Set(
+                    "ButtonForegroundPressed",
+                    selected
+                        ? Theme.Ref("TextOnAccentFillColorSecondaryBrush")
+                        : Theme.PrimaryText)
+                .Set(
+                    "ButtonBorderBrush",
+                    selected
+                        ? Theme.Ref("AccentFillColorDefaultBrush")
+                        : Theme.Ref("SubtleFillColorTransparentBrush")))
+            .WithKey($"page-{value}-{(selected ? "selected" : "normal")}");
     }
 
     private static Element FilterButton(
@@ -495,7 +669,7 @@ class App : Component
                     selected
                         ? Theme.Ref("AccentFillColorTertiaryBrush")
                         : Theme.Ref("SubtleFillColorTransparentBrush")))
-            .WithKey(value);
+            .WithKey($"filter-{AutomationToken(value)}-{(selected ? "selected" : "normal")}");
 
         return dropThread is null
             ? button
@@ -518,21 +692,43 @@ class App : Component
                 .AutomationId("TagFilter_All")
                 .HAlign(HorizontalAlignment.Stretch)
                 .Set(button => button.HorizontalContentAlignment = HorizontalAlignment.Stretch)
-                .Resources(resources =>
-                {
-                    resources
-                        .Set(
-                            "ButtonBackground",
-                            selected
-                                ? Theme.Ref("AccentFillColorDefaultBrush")
-                                : Theme.Ref("SubtleFillColorTransparentBrush"))
-                        .Set(
-                            "ButtonForeground",
-                            selected
-                                ? Theme.Ref("TextOnAccentFillColorPrimaryBrush")
-                                : Theme.PrimaryText);
-                })
-                .WithKey("__all_tags");
+                .Resources(resources => resources
+                    .Set(
+                        "ButtonBackground",
+                        selected
+                            ? Theme.Ref("AccentFillColorDefaultBrush")
+                            : Theme.Ref("SubtleFillColorTransparentBrush"))
+                    .Set(
+                        "ButtonBackgroundPointerOver",
+                        selected
+                            ? Theme.Ref("AccentFillColorSecondaryBrush")
+                            : Theme.Ref("SubtleFillColorSecondaryBrush"))
+                    .Set(
+                        "ButtonBackgroundPressed",
+                        selected
+                            ? Theme.Ref("AccentFillColorTertiaryBrush")
+                            : Theme.Ref("SubtleFillColorTertiaryBrush"))
+                    .Set(
+                        "ButtonForeground",
+                        selected
+                            ? Theme.Ref("TextOnAccentFillColorPrimaryBrush")
+                            : Theme.PrimaryText)
+                    .Set(
+                        "ButtonForegroundPointerOver",
+                        selected
+                            ? Theme.Ref("TextOnAccentFillColorPrimaryBrush")
+                            : Theme.PrimaryText)
+                    .Set(
+                        "ButtonForegroundPressed",
+                        selected
+                            ? Theme.Ref("TextOnAccentFillColorSecondaryBrush")
+                            : Theme.PrimaryText)
+                    .Set(
+                        "ButtonBorderBrush",
+                        selected
+                            ? Theme.Ref("AccentFillColorDefaultBrush")
+                            : Theme.Ref("SubtleFillColorTransparentBrush")))
+                .WithKey($"tag-filter-all-{(selected ? "selected" : "normal")}");
         }
 
         return TagFilterButton(summary, selectedTag, selectTag);
@@ -575,7 +771,7 @@ class App : Component
                         .Set("ButtonBorderBrush", Theme.Ref("SubtleFillColorTransparentBrush"));
                 }
             })
-            .WithKey($"tag-filter-{tag.Name}");
+            .WithKey($"tag-filter-{AutomationToken(tag.Name)}-{(selected ? "selected" : "normal")}");
     }
 
     private static Element RenderThreadList(
@@ -763,10 +959,8 @@ class App : Component
         Action<string> setTitleDraft,
         Action<EditDraft> saveMetadata,
         IReadOnlyList<TagDefinition> tags,
-        TagEditorDraft tagEditor,
-        Action<TagEditorDraft> setTagEditor,
         Action<CodexThread, TagDefinition> toggleThreadTag,
-        Action saveTagDefinition,
+        Action openTagManager,
         Action<CodexThread, bool> setArchived,
         Action<CodexThread, string> renameThread,
         bool supportsNativeActions,
@@ -914,7 +1108,7 @@ class App : Component
                         .OnLostFocus((sender, _) => SaveFolderFromSender(sender))
                         .OnKeyDown((sender, args) => SaveOnEnter(sender, args, SaveFolderFromSender))
                         .Flex(shrink: 0),
-                    RenderThreadTagSection(thread, tags, toggleThreadTag, tagEditor, setTagEditor, saveTagDefinition)
+                    RenderThreadTagSection(thread, tags, toggleThreadTag, openTagManager)
                         .Flex(shrink: 0),
                     TextBox(
                             draft.Notes,
@@ -965,102 +1159,218 @@ class App : Component
         CodexThread thread,
         IReadOnlyList<TagDefinition> tags,
         Action<CodexThread, TagDefinition> toggleThreadTag,
-        TagEditorDraft tagEditor,
-        Action<TagEditorDraft> setTagEditor,
-        Action saveTagDefinition)
+        Action openTagManager)
     {
-        var tagButtons = tags
+        var selectedTags = tags
+            .Where(tag => thread.Metadata.Tags.Any(name => name.Equals(tag.Name, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        var availableTags = tags
+            .Where(tag => !thread.Metadata.Tags.Any(name => name.Equals(tag.Name, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        var selectedButtons = selectedTags
             .Select(tag => TagToggleButton(
                 tag,
-                thread.Metadata.Tags.Any(name => name.Equals(tag.Name, StringComparison.OrdinalIgnoreCase)),
+                selected: true,
+                () => toggleThreadTag(thread, tag)))
+            .ToArray();
+        var availableButtons = availableTags
+            .Select(tag => TagToggleButton(
+                tag,
+                selected: false,
                 () => toggleThreadTag(thread, tag)))
             .ToArray();
 
-        var catalogRows = tags
-            .Select(tag => TagCatalogRow(tag, tagEditor, setTagEditor))
-            .ToArray();
-
         return FlexColumn(
-                BodyStrong("Tags"),
+                BodyStrong("Thread tags"),
                 If(
                     tags.Count == 0,
-                    () => Caption("No tags").Foreground(Theme.SecondaryText),
-                    () => ScrollViewer(
-                            FlexRow(tagButtons) with
-                            {
-                                ColumnGap = 6,
-                                RowGap = 6,
-                                AlignItems = FlexAlign.Center,
-                                Wrap = FlexWrap.Wrap
-                            })
-                        .MaxHeight(104)),
-                Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 2, 0, 2),
-                BodyStrong("Global tags"),
-                If(
-                    tags.Count == 0,
-                    () => Empty(),
-                    () => ScrollViewer(
-                            FlexColumn(catalogRows) with
-                            {
-                                RowGap = 6
-                            })
-                        .MaxHeight(126)),
-                TextBox(
-                        tagEditor.Name,
-                        value => setTagEditor(tagEditor with { Name = value }),
-                        placeholderText: "tag name",
-                        header: "Name")
-                    .AutomationId("TagEditorName")
-                    .Flex(shrink: 0),
-                FlexRow(
-                    TextBox(
-                            tagEditor.Color,
-                            value => setTagEditor(tagEditor with { Color = value }),
-                            placeholderText: "#0969DA",
-                            header: "Color")
-                        .AutomationId("TagEditorColor")
-                        .Flex(grow: 1, basis: 0),
-                    Border(Empty())
-                        .Size(30, 30)
-                        .CornerRadius(4)
-                        .Background(ThreadShelfRepository.NormalizeTagColor(tagEditor.Color))
-                        .WithBorder(Theme.CardStroke, 1)
-                        .Flex(shrink: 0))
-                with
-                {
-                    ColumnGap = 8,
-                    AlignItems = FlexAlign.End
-                },
-                TextBox(
-                        tagEditor.Description,
-                        value => setTagEditor(tagEditor with { Description = value }),
-                        placeholderText: "Description",
-                        header: "Description")
-                    .AutomationId("TagEditorDescription")
-                    .Flex(shrink: 0),
-                FlexRow(
-                    Button(tagEditor.EditingName.Length == 0 ? "Add tag" : "Save tag", saveTagDefinition)
-                        .AutomationName(tagEditor.EditingName.Length == 0 ? "Add global tag" : "Save global tag")
-                        .AutomationId("TagEditorSave")
-                        .AccentButton()
-                        .Flex(grow: 1, basis: 0),
-                    If(
-                        tagEditor.EditingName.Length > 0,
-                        () => Button("Cancel", () => setTagEditor(TagEditorDraft.Empty))
-                            .AutomationName("Cancel tag edit")
-                            .AutomationId("TagEditorCancel")
-                            .SubtleButton()
-                            .Flex(shrink: 0),
-                        () => Empty()))
-                with
-                {
-                    ColumnGap = 8,
-                    AlignItems = FlexAlign.Center
-                })
+                    () => Caption("No global tags").Foreground(Theme.SecondaryText),
+                    () => FlexColumn(
+                            If(
+                                selectedButtons.Length == 0,
+                                () => Caption("No tags selected").Foreground(Theme.SecondaryText),
+                                () => ScrollViewer(
+                                        FlexRow(selectedButtons) with
+                                        {
+                                            ColumnGap = 6,
+                                            RowGap = 6,
+                                            AlignItems = FlexAlign.Center,
+                                            Wrap = FlexWrap.Wrap
+                                        })
+                                    .MaxHeight(74)),
+                            If(
+                                availableButtons.Length == 0,
+                                () => Empty(),
+                                () => FlexColumn(
+                                        BodyStrong("Add tags"),
+                                        ScrollViewer(
+                                                FlexRow(availableButtons) with
+                                                {
+                                                    ColumnGap = 6,
+                                                    RowGap = 6,
+                                                    AlignItems = FlexAlign.Center,
+                                                    Wrap = FlexWrap.Wrap
+                                                })
+                                            .MaxHeight(92))
+                                    with
+                                    {
+                                        RowGap = 6
+                                    }))
+                        with
+                        {
+                            RowGap = 8
+                        }),
+                Button("Manage tags", openTagManager)
+                    .AutomationName("Open tag manager")
+                    .AutomationId("OpenTagManagerButton")
+                    .SubtleButton()
+                    .HAlign(HorizontalAlignment.Stretch))
             with
             {
                 RowGap = 8
             };
+    }
+
+    private static Element RenderTagManagerPage(
+        IReadOnlyList<CodexThread> threads,
+        IReadOnlyList<TagDefinition> tags,
+        TagEditorDraft tagEditor,
+        Action<TagEditorDraft> setTagEditor,
+        Action saveTagDefinition,
+        string pendingDeleteTag,
+        Action<string> setPendingDeleteTag,
+        Action<string> deleteTagDefinition,
+        Action close,
+        string status)
+    {
+        var summaries = ThreadFilters.BuildTagSummaries(threads, tags);
+        var rows = summaries
+            .Select(summary => TagCatalogRow(
+                summary,
+                tagEditor,
+                setTagEditor,
+                pendingDeleteTag,
+                setPendingDeleteTag,
+                deleteTagDefinition))
+            .ToArray();
+
+        return Border(
+                FlexColumn(
+                    FlexRow(
+                        BodyStrong("Tag manager").Flex(grow: 1, basis: 0),
+                        Button("New tag", () =>
+                            {
+                                setPendingDeleteTag("");
+                                setTagEditor(TagEditorDraft.Empty);
+                            })
+                            .AutomationId("TagManagerNew")
+                            .SubtleButton()
+                            .Flex(shrink: 0),
+                        Button("Back", close)
+                            .AutomationId("TagManagerBack")
+                            .SubtleButton()
+                            .Flex(shrink: 0))
+                    with
+                    {
+                        ColumnGap = 8,
+                        AlignItems = FlexAlign.Center
+                    },
+                    FlexRow(
+                        If(
+                            rows.Length == 0,
+                            () => Border(
+                                    FlexColumn(
+                                        BodyLarge("No tags"),
+                                        Caption("Create a tag to use it on threads.").Foreground(Theme.SecondaryText))
+                                    with
+                                    {
+                                        RowGap = 8,
+                                        AlignItems = FlexAlign.Center,
+                                        JustifyContent = FlexJustify.Center
+                                    })
+                                .Flex(grow: 1, basis: 0),
+                            () => ScrollViewer(
+                                    FlexColumn(rows) with
+                                    {
+                                        RowGap = 8
+                                    })
+                                .Flex(grow: 1, basis: 0)),
+                        Border(
+                                FlexColumn(
+                                    BodyStrong(tagEditor.EditingName.Length == 0 ? "New tag" : "Edit tag"),
+                                    TextBox(
+                                            tagEditor.Name,
+                                            value => setTagEditor(tagEditor with { Name = value }),
+                                            placeholderText: "tag name",
+                                            header: "Name")
+                                        .AutomationId("TagEditorName")
+                                        .Flex(shrink: 0),
+                                    FlexRow(
+                                        TextBox(
+                                                tagEditor.Color,
+                                                value => setTagEditor(tagEditor with { Color = value }),
+                                                placeholderText: "#0969DA",
+                                                header: "Color")
+                                            .AutomationId("TagEditorColor")
+                                            .Flex(grow: 1, basis: 0),
+                                        Border(Empty())
+                                            .Size(30, 30)
+                                            .CornerRadius(4)
+                                            .Background(ThreadShelfRepository.NormalizeTagColor(tagEditor.Color))
+                                            .WithBorder(Theme.CardStroke, 1)
+                                            .Flex(shrink: 0))
+                                    with
+                                    {
+                                        ColumnGap = 8,
+                                        AlignItems = FlexAlign.End
+                                    },
+                                    TextBox(
+                                            tagEditor.Description,
+                                            value => setTagEditor(tagEditor with { Description = value }),
+                                            placeholderText: "Description",
+                                            header: "Description")
+                                        .AutomationId("TagEditorDescription")
+                                        .Flex(shrink: 0),
+                                    FlexRow(
+                                        Button(tagEditor.EditingName.Length == 0 ? "Create" : "Save", saveTagDefinition)
+                                            .AutomationName(tagEditor.EditingName.Length == 0 ? "Create tag" : "Save tag")
+                                            .AutomationId("TagEditorSave")
+                                            .AccentButton()
+                                            .Flex(grow: 1, basis: 0),
+                                        Button("Cancel", () => setTagEditor(TagEditorDraft.Empty))
+                                            .AutomationName("Cancel tag edit")
+                                            .AutomationId("TagEditorCancel")
+                                            .SubtleButton()
+                                            .Flex(shrink: 0))
+                                    with
+                                    {
+                                        ColumnGap = 8,
+                                        AlignItems = FlexAlign.Center
+                                    })
+                                with
+                                {
+                                    RowGap = 10
+                                })
+                            .Padding(12)
+                            .CornerRadius(8)
+                            .Background(Theme.LayerFill)
+                            .WithBorder(Theme.CardStroke, 1)
+                            .Flex(basis: 330, shrink: 0))
+                    with
+                    {
+                        ColumnGap = 14,
+                        AlignItems = FlexAlign.Stretch
+                    },
+                    Caption(status).Foreground(Theme.SecondaryText).Flex(shrink: 0))
+                with
+                {
+                    RowGap = 12
+                })
+            .Padding(14)
+            .CornerRadius(8)
+            .Background(Theme.CardBackground)
+            .WithBorder(Theme.CardStroke, 1)
+            .Flex(grow: 1, basis: 0);
     }
 
     private static Element TagToggleButton(TagDefinition tag, bool selected, Action toggle)
@@ -1092,31 +1402,61 @@ class App : Component
                         .Set("ButtonBorderBrush", tag.Color);
                 }
             })
-            .WithKey($"tag-toggle-{tag.Name}");
+            .WithKey($"tag-toggle-{AutomationToken(tag.Name)}-{(selected ? "selected" : "normal")}");
     }
 
     private static Element TagCatalogRow(
-        TagDefinition tag,
+        TagSummary summary,
         TagEditorDraft tagEditor,
-        Action<TagEditorDraft> setTagEditor)
+        Action<TagEditorDraft> setTagEditor,
+        string pendingDeleteTag,
+        Action<string> setPendingDeleteTag,
+        Action<string> deleteTagDefinition)
     {
+        var tag = summary.Definition;
         var editing = tagEditor.EditingName.Equals(tag.Name, StringComparison.OrdinalIgnoreCase);
+        var confirmingDelete = pendingDeleteTag.Equals(tag.Name, StringComparison.OrdinalIgnoreCase);
         var description = string.IsNullOrWhiteSpace(tag.Description) ? "-" : tag.Description;
 
         return Border(
                 FlexRow(
                     TagBadge(tag).Flex(shrink: 0),
-                    Caption(description)
-                        .Foreground(Theme.SecondaryText)
-                        .TextTrimming(TextTrimming.CharacterEllipsis)
-                        .MaxLines(1)
-                        .Flex(grow: 1, basis: 0),
-                    Button("Edit", () => setTagEditor(new TagEditorDraft(
-                            tag.Name,
-                            tag.Name,
-                            tag.Color,
-                            tag.Description)))
+                    (FlexColumn(
+                        Caption(description)
+                            .Foreground(Theme.SecondaryText)
+                            .TextTrimming(TextTrimming.CharacterEllipsis)
+                            .MaxLines(1),
+                        Caption($"{summary.Count:N0} threads")
+                            .Foreground(Theme.TertiaryText))
+                    with
+                    {
+                        RowGap = 2
+                    }).Flex(grow: 1, basis: 0),
+                    Button("Edit", () =>
+                        {
+                            setPendingDeleteTag("");
+                            setTagEditor(new TagEditorDraft(
+                                tag.Name,
+                                tag.Name,
+                                tag.Color,
+                                tag.Description));
+                        })
                         .AutomationId($"TagEdit_{AutomationToken(tag.Name)}")
+                        .SubtleButton()
+                        .Flex(shrink: 0),
+                    Button(confirmingDelete ? "Confirm" : "Delete", () =>
+                        {
+                            if (confirmingDelete)
+                            {
+                                deleteTagDefinition(tag.Name);
+                            }
+                            else
+                            {
+                                setPendingDeleteTag(tag.Name);
+                            }
+                        })
+                        .AutomationName(confirmingDelete ? $"Confirm delete tag {tag.Name}" : $"Delete tag {tag.Name}")
+                        .AutomationId($"TagDelete_{AutomationToken(tag.Name)}")
                         .SubtleButton()
                         .Flex(shrink: 0))
                 with
@@ -1128,7 +1468,7 @@ class App : Component
             .CornerRadius(6)
             .Background(editing ? Theme.ControlFillSecondary : Theme.LayerFill)
             .WithBorder(editing ? Theme.Accent : Theme.CardStroke, editing ? 2 : 1)
-            .WithKey($"tag-catalog-{tag.Name}");
+            .WithKey($"tag-catalog-{AutomationToken(tag.Name)}-{(editing ? "editing" : "normal")}-{(confirmingDelete ? "delete" : "idle")}");
     }
 
     private static Element TagBadge(TagDefinition tag) =>

@@ -354,6 +354,36 @@ internal sealed class ThreadShelfRepository
         SaveSidecar(document);
     }
 
+    public void DeleteTagDefinition(string name)
+    {
+        var normalizedName = NormalizeTagName(name);
+        if (normalizedName.Length == 0)
+        {
+            throw new InvalidOperationException("Tag name cannot be empty.");
+        }
+
+        var document = LoadSidecar();
+        document.Tags.Remove(normalizedName);
+
+        foreach (var (threadId, metadata) in document.Threads.ToArray())
+        {
+            if (!metadata.Tags.Any(tag => tag.Equals(normalizedName, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            document.Threads[threadId] = Normalize(metadata with
+            {
+                Tags = metadata.Tags
+                    .Where(tag => !tag.Equals(normalizedName, StringComparison.OrdinalIgnoreCase))
+                    .ToList(),
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+        }
+
+        SaveSidecar(document);
+    }
+
     public void SetArchived(string threadId, bool archived) =>
         CodexAppServerClient.SetThreadArchived(threadId, archived);
 

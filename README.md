@@ -14,10 +14,12 @@ it keeps its own sidecar index.
 - Stores ThreadShelf metadata in
   `~/.codex/threadshelf/threadshelf.json`.
 - Supports folder filters, drag-to-folder moves, favorites, global colored tags
-  with descriptions, tag/note search, native archive/unarchive and rename
-  through the CLI app-server, and `codex://threads/{id}` deep links back into
-  the Codex app.
+  with descriptions, a dedicated tag manager, tag/note search, native
+  archive/unarchive and rename through the CLI app-server, and
+  `codex://threads/{id}` deep links back into the Codex app.
 - Does not write folders, tags, notes, or favorites into Codex-owned state.
+- Includes an AI automation interface plan in `docs/ai-interface.md` covering a
+  future CLI/MCP surface, data model, permissions, and error format.
 
 ## Run
 
