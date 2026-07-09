@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+
 using ThreadShelf;
 
 var server = new ThreadShelfMcpServer();
@@ -56,30 +57,24 @@ internal sealed class ThreadShelfMcpServer
         var hasId = root.TryGetProperty("id", out var idElement);
         var id = hasId ? ReadRpcId(idElement) : null;
 
-        if (!hasId && method.StartsWith("notifications/", StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        if (!hasId)
-        {
-            return null;
-        }
-
-        return method switch
-        {
-            "initialize" => RpcResult(
-                id,
-                new
-                {
-                    protocolVersion = "2024-11-05",
-                    capabilities = new { tools = new { listChanged = false } },
-                    serverInfo = new { name = "threadshelf-mcp", version = "0.1.0" }
-                }),
-            "tools/list" => RpcResult(id, new { tools = ToolCatalog() }),
-            "tools/call" => RpcResult(id, HandleToolCall(GetParams(root))),
-            _ => RpcError(id, -32601, $"Unknown method '{method}'.")
-        };
+        return !hasId && method.StartsWith("notifications/", StringComparison.Ordinal)
+            ? null
+            : !hasId
+            ? null
+            : method switch
+            {
+                "initialize" => RpcResult(
+                    id,
+                    new
+                    {
+                        protocolVersion = "2024-11-05",
+                        capabilities = new { tools = new { listChanged = false } },
+                        serverInfo = new { name = "threadshelf-mcp", version = "0.1.0" }
+                    }),
+                "tools/list" => RpcResult(id, new { tools = ToolCatalog() }),
+                "tools/call" => RpcResult(id, HandleToolCall(GetParams(root))),
+                _ => RpcError(id, -32601, $"Unknown method '{method}'.")
+            };
     }
 
     private object HandleToolCall(JsonElement parameters)
@@ -203,15 +198,18 @@ internal sealed class ThreadShelfMcpServer
 
     private static ThreadShelfCommandResult<T> RequireConfirmed<T>(
         JsonElement arguments,
-        Func<ThreadShelfCommandResult<T>> action) =>
-        GetNullableBool(arguments, "confirmed") == true
+        Func<ThreadShelfCommandResult<T>> action)
+    {
+        return GetNullableBool(arguments, "confirmed") == true
             ? action()
             : ThreadShelfCommandResult<T>.Failure(
                 "confirmation_required",
                 "Set confirmed to true to allow this mutation.");
+    }
 
-    private static object ToolResponse<T>(ThreadShelfCommandResult<T> result) =>
-        new
+    private static object ToolResponse<T>(ThreadShelfCommandResult<T> result)
+    {
+        return new
         {
             content = new[]
             {
@@ -223,9 +221,11 @@ internal sealed class ThreadShelfMcpServer
             },
             isError = !result.Ok
         };
+    }
 
-    private static object[] ToolCatalog() =>
-    [
+    private static object[] ToolCatalog()
+    {
+        return [
         Tool("threadshelf_list_threads", "List Codex threads with optional folder, tag, query, archive, and limit filters.", Props(
             ("codexHome", StringProp("Optional CODEX_HOME path.")),
             ("folder", StringProp("Folder filter. Use __all, __favorites, __unfiled, or a folder name.")),
@@ -295,13 +295,15 @@ internal sealed class ThreadShelfMcpServer
             ("title", StringProp("New Codex title.")),
             ("confirmed", BoolProp("Must be true for mutations."))), ["threadId", "title", "confirmed"])
     ];
+    }
 
     private static object Tool(
         string name,
         string description,
         Dictionary<string, object> properties,
-        string[]? required = null) =>
-        new
+        string[]? required = null)
+    {
+        return new
         {
             name,
             description,
@@ -312,95 +314,95 @@ internal sealed class ThreadShelfMcpServer
                 required = required ?? []
             }
         };
+    }
 
-    private static Dictionary<string, object> Props(params (string Name, object Schema)[] properties) =>
-        properties.ToDictionary(property => property.Name, property => property.Schema);
+    private static Dictionary<string, object> Props(params (string Name, object Schema)[] properties)
+    {
+        return properties.ToDictionary(property => property.Name, property => property.Schema);
+    }
 
-    private static object StringProp(string description) =>
-        new { type = "string", description };
+    private static object StringProp(string description)
+    {
+        return new { type = "string", description };
+    }
 
-    private static object BoolProp(string description) =>
-        new { type = "boolean", description };
+    private static object BoolProp(string description)
+    {
+        return new { type = "boolean", description };
+    }
 
-    private static object IntProp(string description) =>
-        new { type = "integer", description };
+    private static object IntProp(string description)
+    {
+        return new { type = "integer", description };
+    }
 
-    private static JsonElement GetParams(JsonElement root) =>
-        GetObject(root, "params");
+    private static JsonElement GetParams(JsonElement root)
+    {
+        return GetObject(root, "params");
+    }
 
-    private static JsonElement GetObject(JsonElement element, string propertyName) =>
-        element.TryGetProperty(propertyName, out var property)
+    private static JsonElement GetObject(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var property)
             && property.ValueKind == JsonValueKind.Object
                 ? property
                 : default;
+    }
 
-    private static string GetString(JsonElement element, string propertyName) =>
-        GetNullableString(element, propertyName) ?? "";
+    private static string GetString(JsonElement element, string propertyName)
+    {
+        return GetNullableString(element, propertyName) ?? "";
+    }
 
-    private static string GetStringOrDefault(JsonElement element, string propertyName, string defaultValue) =>
-        GetNullableString(element, propertyName) ?? defaultValue;
+    private static string GetStringOrDefault(JsonElement element, string propertyName, string defaultValue)
+    {
+        return GetNullableString(element, propertyName) ?? defaultValue;
+    }
 
     private static string? GetNullableString(JsonElement element, string propertyName)
     {
-        if (element.ValueKind != JsonValueKind.Object
+        return element.ValueKind != JsonValueKind.Object
             || !element.TryGetProperty(propertyName, out var property)
-            || property.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-        {
-            return null;
-        }
-
-        return property.ValueKind == JsonValueKind.String
+            || property.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? null
+            : property.ValueKind == JsonValueKind.String
             ? property.GetString()
             : property.ToString();
     }
 
     private static bool? GetNullableBool(JsonElement element, string propertyName)
     {
-        if (element.ValueKind != JsonValueKind.Object
-            || !element.TryGetProperty(propertyName, out var property))
-        {
-            return null;
-        }
-
-        if (property.ValueKind is JsonValueKind.True or JsonValueKind.False)
-        {
-            return property.GetBoolean();
-        }
-
-        if (property.ValueKind == JsonValueKind.String)
-        {
-            return property.GetString()?.Trim().ToLowerInvariant() switch
+        return element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(propertyName, out var property)
+            ? null
+            : property.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? property.GetBoolean()
+            : property.ValueKind == JsonValueKind.String
+            ? property.GetString()?.Trim().ToLowerInvariant() switch
             {
                 "true" or "1" or "yes" => true,
                 "false" or "0" or "no" => false,
                 _ => null
-            };
-        }
-
-        return null;
+            }
+            : null;
     }
 
     private static int? GetNullableInt(JsonElement element, string propertyName)
     {
-        if (element.ValueKind != JsonValueKind.Object
-            || !element.TryGetProperty(propertyName, out var property))
-        {
-            return null;
-        }
-
-        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var number))
-        {
-            return number;
-        }
-
-        return property.ValueKind == JsonValueKind.String
+        return element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(propertyName, out var property)
+            ? null
+            : property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var number)
+            ? number
+            : property.ValueKind == JsonValueKind.String
             && int.TryParse(property.GetString(), out number)
                 ? number
                 : null;
     }
 
-    private static object? ReadRpcId(JsonElement id) =>
-        id.ValueKind switch
+    private static object? ReadRpcId(JsonElement id)
+    {
+        return id.ValueKind switch
         {
             JsonValueKind.String => id.GetString(),
             JsonValueKind.Number when id.TryGetInt64(out var number) => number,
@@ -409,10 +411,15 @@ internal sealed class ThreadShelfMcpServer
             JsonValueKind.Null => null,
             _ => id.Clone()
         };
+    }
 
-    private static object RpcResult(object? id, object result) =>
-        new { jsonrpc = "2.0", id, result };
+    private static object RpcResult(object? id, object result)
+    {
+        return new { jsonrpc = "2.0", id, result };
+    }
 
-    private static object RpcError(object? id, int code, string message) =>
-        new { jsonrpc = "2.0", id, error = new { code, message } };
+    private static object RpcError(object? id, int code, string message)
+    {
+        return new { jsonrpc = "2.0", id, error = new { code, message } };
+    }
 }

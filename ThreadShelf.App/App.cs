@@ -1,18 +1,19 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Microsoft.UI.Reactor;
 using Microsoft.UI.Reactor.Core;
 using Microsoft.UI.Reactor.Input;
 using Microsoft.UI.Reactor.Layout;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
 using ThreadShelf;
+
 using static Microsoft.UI.Reactor.Factories;
 
-ReactorApp.Run(_ =>
-{
-    ReactorApp.OpenWindow(
+ReactorApp.Run(_ => ReactorApp.OpenWindow(
         new WindowSpec
         {
             Title = "ThreadShelf",
@@ -21,10 +22,9 @@ ReactorApp.Run(_ =>
             MinWidth = 980,
             MinHeight = 560
         },
-        () => new App());
-});
+        () => new App()));
 
-class App : Component
+internal class App : Component
 {
     private const string ThreadsPage = "threads";
     private const string TagsPage = "tags";
@@ -51,8 +51,10 @@ class App : Component
         var (status, setStatus) = UseState("");
         var snapshotVersion = snapshot?.LoadedAt.UtcTicks ?? 0L;
 
-        void setTagEditor(TagEditorDraft next) =>
+        void setTagEditor(TagEditorDraft next)
+        {
             updateTagEditor(_ => next);
+        }
 
         void setTagEditorColor(TagEditorDraft renderedDraft, global::Windows.UI.Color color)
         {
@@ -270,9 +272,7 @@ class App : Component
             var hasTag = thread.Metadata.Tags.Any(name =>
                 name.Equals(tagName, StringComparison.OrdinalIgnoreCase));
             var nextTags = hasTag
-                ? thread.Metadata.Tags
-                    .Where(name => !name.Equals(tagName, StringComparison.OrdinalIgnoreCase))
-                    .ToList()
+                ? [.. thread.Metadata.Tags.Where(name => !name.Equals(tagName, StringComparison.OrdinalIgnoreCase))]
                 : thread.Metadata.Tags
                     .Concat([tagName])
                     .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -440,10 +440,10 @@ class App : Component
                         ShowThreads,
                         status))
                     with
-                    {
-                        ColumnGap = 16,
-                        AlignItems = FlexAlign.Stretch
-                    }
+                {
+                    ColumnGap = 16,
+                    AlignItems = FlexAlign.Stretch
+                }
                 : FlexRow(
                     sidebar,
                     RenderThreadList(
@@ -470,10 +470,10 @@ class App : Component
                         snapshot.SupportsNativeActions,
                         setStatus))
                     with
-                    {
-                        ColumnGap = 16,
-                        AlignItems = FlexAlign.Stretch
-                    };
+                {
+                    ColumnGap = 16,
+                    AlignItems = FlexAlign.Stretch
+                };
         }
 
         return FlexColumn(
@@ -484,8 +484,9 @@ class App : Component
             .Backdrop(BackdropKind.Mica);
     }
 
-    private static Element RenderLoading(string status) =>
-        Border(
+    private static Element RenderLoading(string status)
+    {
+        return Border(
             FlexColumn(
                 ProgressRing().IsActive(),
                 BodyLarge("Loading Codex thread index"),
@@ -497,6 +498,7 @@ class App : Component
                 JustifyContent = FlexJustify.Center
             })
         .Flex(grow: 1, basis: 0);
+    }
 
     private static Element RenderSidebar(
         IReadOnlyList<CodexThread> threads,
@@ -644,10 +646,7 @@ class App : Component
             .AutomationName(label)
             .AutomationId($"Filter_{AutomationToken(value)}")
             .HAlign(HorizontalAlignment.Stretch)
-            .Set(button =>
-            {
-                button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
-            })
+            .Set(button => button.HorizontalContentAlignment = HorizontalAlignment.Stretch)
             .Resources(resources => resources
                 .Set(
                     "ButtonBackground",
@@ -774,28 +773,20 @@ class App : Component
             .HAlign(HorizontalAlignment.Stretch)
             .ToolTip(string.IsNullOrWhiteSpace(tag.Description) ? tag.Name : tag.Description)
             .Set(button => button.HorizontalContentAlignment = HorizontalAlignment.Stretch)
-            .Resources(resources =>
-            {
-                if (selected)
-                {
-                    resources
+            .Resources(resources => _ = selected
+                    ? resources
                         .Set("ButtonBackground", tag.Color)
                         .Set("ButtonBackgroundPointerOver", tag.Color)
                         .Set("ButtonBackgroundPressed", tag.Color)
                         .Set("ButtonForeground", foreground)
                         .Set("ButtonForegroundPointerOver", foreground)
                         .Set("ButtonForegroundPressed", foreground)
-                        .Set("ButtonBorderBrush", tag.Color);
-                }
-                else
-                {
-                    resources
+                        .Set("ButtonBorderBrush", tag.Color)
+                    : resources
                         .Set("ButtonBackground", Theme.Ref("SubtleFillColorTransparentBrush"))
                         .Set("ButtonBackgroundPointerOver", Theme.Ref("SubtleFillColorSecondaryBrush"))
                         .Set("ButtonForeground", Theme.PrimaryText)
-                        .Set("ButtonBorderBrush", Theme.Ref("SubtleFillColorTransparentBrush"));
-                }
-            })
+                        .Set("ButtonBorderBrush", Theme.Ref("SubtleFillColorTransparentBrush")))
             .WithKey($"tag-filter-{AutomationToken(tag.Name)}-{(selected ? "selected" : "normal")}");
     }
 
@@ -829,9 +820,9 @@ class App : Component
                     tagLookup,
                     selectThread))
             with
-            {
-                SelectedIndex = selectedIndex
-            })
+        {
+            SelectedIndex = selectedIndex
+        })
             .SelectedIndexChanged(index =>
             {
                 if (index >= 0 && index < threads.Count)
@@ -947,12 +938,12 @@ class App : Component
                                         ? definition
                                         : new TagDefinition { Name = name })),
                                 If(hiddenTagCount > 0, () => Caption($"+{hiddenTagCount}").Foreground(Theme.SecondaryText), () => Empty())]) with
-                            {
-                                ColumnGap = 5,
-                                RowGap = 4,
-                                AlignItems = FlexAlign.Center,
-                                Wrap = FlexWrap.Wrap
-                            },
+                        {
+                            ColumnGap = 5,
+                            RowGap = 4,
+                            AlignItems = FlexAlign.Center,
+                            Wrap = FlexWrap.Wrap
+                        },
                         () => Empty()),
                     If(
                         !string.IsNullOrWhiteSpace(location),
@@ -1168,9 +1159,9 @@ class App : Component
                         AlignItems = FlexAlign.Center
                     })
                 with
-                {
-                    RowGap = 10
-                }) with
+                    {
+                        RowGap = 10
+                    }) with
                 {
                     HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
                     VerticalScrollBarVisibility = ScrollBarVisibility.Auto
@@ -1242,25 +1233,26 @@ class App : Component
                                                 })
                                             .MaxHeight(92))
                                     with
-                                    {
-                                        RowGap = 6
-                                    }))
+                                {
+                                    RowGap = 6
+                                }))
                         with
-                        {
-                            RowGap = 8
-                        }),
+                    {
+                        RowGap = 8
+                    }),
                 DetailsButton("Manage tags", openTagManager)
                     .AutomationName("Open tag manager")
                     .AutomationId("OpenTagManagerButton")
                     .HAlign(HorizontalAlignment.Stretch))
             with
-            {
-                RowGap = 8
-            };
+        {
+            RowGap = 8
+        };
     }
 
-    private static ButtonElement DetailsButton(string label, Action action) =>
-        Button(label, action)
+    private static ButtonElement DetailsButton(string label, Action action)
+    {
+        return Button(label, action)
             .AutomationName(label)
             .Set(button =>
             {
@@ -1281,6 +1273,7 @@ class App : Component
                 .Set("ButtonBorderBrushPointerOver", Theme.Ref("ControlStrongStrokeColorDefaultBrush"))
                 .Set("ButtonBorderBrushPressed", Theme.ControlStrokeSecondary)
                 .Set("ButtonBorderBrushDisabled", Theme.Ref("ControlStrokeColorDefaultBrush")));
+    }
 
     private static Element RenderTagManagerPage(
         IReadOnlyList<CodexThread> threads,
@@ -1441,9 +1434,9 @@ class App : Component
                     .HAlign(HorizontalAlignment.Stretch)
                     .Flex(shrink: 0))
             with
-            {
-                RowGap = 8
-            };
+        {
+            RowGap = 8
+        };
     }
 
     private static Element TagToggleButton(TagDefinition tag, bool selected, Action toggle)
@@ -1453,28 +1446,20 @@ class App : Component
             .AutomationName(selected ? $"Remove tag {tag.Name}" : $"Add tag {tag.Name}")
             .AutomationId($"ThreadTagToggle_{AutomationToken(tag.Name)}")
             .ToolTip(string.IsNullOrWhiteSpace(tag.Description) ? tag.Name : tag.Description)
-            .Resources(resources =>
-            {
-                if (selected)
-                {
-                    resources
+            .Resources(resources => _ = selected
+                    ? resources
                         .Set("ButtonBackground", tag.Color)
                         .Set("ButtonBackgroundPointerOver", tag.Color)
                         .Set("ButtonBackgroundPressed", tag.Color)
                         .Set("ButtonForeground", foreground)
                         .Set("ButtonForegroundPointerOver", foreground)
                         .Set("ButtonForegroundPressed", foreground)
-                        .Set("ButtonBorderBrush", tag.Color);
-                }
-                else
-                {
-                    resources
+                        .Set("ButtonBorderBrush", tag.Color)
+                    : resources
                         .Set("ButtonBackground", Theme.Ref("SubtleFillColorTransparentBrush"))
                         .Set("ButtonBackgroundPointerOver", Theme.Ref("SubtleFillColorSecondaryBrush"))
                         .Set("ButtonForeground", Theme.PrimaryText)
-                        .Set("ButtonBorderBrush", tag.Color);
-                }
-            })
+                        .Set("ButtonBorderBrush", tag.Color))
             .WithKey($"tag-toggle-{AutomationToken(tag.Name)}-{(selected ? "selected" : "normal")}");
     }
 
@@ -1544,8 +1529,9 @@ class App : Component
             .WithKey($"tag-catalog-{AutomationToken(tag.Name)}-{(editing ? "editing" : "normal")}-{(confirmingDelete ? "delete" : "idle")}");
     }
 
-    private static Element TagBadge(TagDefinition tag) =>
-        Border(
+    private static Element TagBadge(TagDefinition tag)
+    {
+        return Border(
                 Caption(tag.Name)
                     .Foreground(ForegroundFor(tag.Color))
                     .TextTrimming(TextTrimming.CharacterEllipsis)
@@ -1556,9 +1542,11 @@ class App : Component
             .WithBorder(tag.Color, 1)
             .MaxWidth(148)
             .ToolTip(string.IsNullOrWhiteSpace(tag.Description) ? tag.Name : tag.Description);
+    }
 
-    private static Element CompactTagBadge(TagDefinition tag) =>
-        Border(
+    private static Element CompactTagBadge(TagDefinition tag)
+    {
+        return Border(
                 Caption(tag.Name)
                     .Foreground(ForegroundFor(tag.Color))
                     .TextTrimming(TextTrimming.CharacterEllipsis)
@@ -1569,9 +1557,11 @@ class App : Component
             .WithBorder(tag.Color, 1)
             .MaxWidth(120)
             .ToolTip(string.IsNullOrWhiteSpace(tag.Description) ? tag.Name : tag.Description);
+    }
 
-    private static Element MetadataLine(string label, string value) =>
-        FlexRow(
+    private static Element MetadataLine(string label, string value)
+    {
+        return FlexRow(
             Caption(label).Foreground(Theme.SecondaryText).Width(76).Flex(shrink: 0),
             Caption(value)
                 .TextTrimming(TextTrimming.CharacterEllipsis)
@@ -1583,12 +1573,15 @@ class App : Component
             ColumnGap = 8,
             AlignItems = FlexAlign.Center
         };
+    }
 
-    private static Element Pill(string text, ThemeRef background) =>
-        Border(Caption(text).Foreground(Theme.PrimaryText))
+    private static Element Pill(string text, ThemeRef background)
+    {
+        return Border(Caption(text).Foreground(Theme.PrimaryText))
             .Padding(7, 2)
             .CornerRadius(4)
             .Background(background);
+    }
 
     private static string DescribeLoad(ThreadShelfSnapshot snapshot)
     {
@@ -1598,15 +1591,19 @@ class App : Component
             : $"{description}; {snapshot.LoadWarning}";
     }
 
-    private static bool SameMetadata(ThreadMetadata left, ThreadMetadata right) =>
-        string.Equals(left.Folder, right.Folder, StringComparison.Ordinal)
+    private static bool SameMetadata(ThreadMetadata left, ThreadMetadata right)
+    {
+        return string.Equals(left.Folder, right.Folder, StringComparison.Ordinal)
         && string.Equals(left.Notes, right.Notes, StringComparison.Ordinal)
         && left.Favorite == right.Favorite
         && left.Tags.SequenceEqual(right.Tags, StringComparer.OrdinalIgnoreCase);
+    }
 
-    private static bool SameTagEditorIdentity(TagEditorDraft current, TagEditorDraft rendered) =>
-        string.Equals(current.EditingName, rendered.EditingName, StringComparison.Ordinal)
+    private static bool SameTagEditorIdentity(TagEditorDraft current, TagEditorDraft rendered)
+    {
+        return string.Equals(current.EditingName, rendered.EditingName, StringComparison.Ordinal)
         && string.Equals(current.Name, rendered.Name, StringComparison.Ordinal);
+    }
 
     private static string ForegroundFor(string color)
     {
@@ -1614,7 +1611,7 @@ class App : Component
         var red = Convert.ToInt32(normalized.Substring(1, 2), 16);
         var green = Convert.ToInt32(normalized.Substring(3, 2), 16);
         var blue = Convert.ToInt32(normalized.Substring(5, 2), 16);
-        var luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
+        var luminance = ((0.299 * red) + (0.587 * green) + (0.114 * blue)) / 255;
         return luminance > 0.58 ? "#1F2328" : "#FFFFFF";
     }
 
@@ -1628,8 +1625,10 @@ class App : Component
             Convert.ToByte(normalized.Substring(5, 2), 16));
     }
 
-    private static string TagColorFromWinUIColor(global::Windows.UI.Color color) =>
-        $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+    private static string TagColorFromWinUIColor(global::Windows.UI.Color color)
+    {
+        return $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+    }
 
     private static string AutomationToken(string value)
     {
@@ -1640,6 +1639,8 @@ class App : Component
         return token.Length == 0 ? "Empty" : token;
     }
 
-    private static string EmptyText(string value) =>
-        string.IsNullOrWhiteSpace(value) ? "-" : value;
+    private static string EmptyText(string value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "-" : value;
+    }
 }
