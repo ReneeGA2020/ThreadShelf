@@ -1,0 +1,105 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userprefs
+*.userosscache
+*.sln.docstates
+
+# Build artifacts
+bin/
+obj/
+out/
+artifacts/
+**/bin/
+**/obj/
+
+# ASP.NET Scaffolding
+ScaffoldingReadMe.txt
+
+# Visual Studio cache files
+*.VC.db
+*.VC.opendb
+
+# NuGet
+*.nupkg
+packages/
+.nuget/packages/
+project.lock.json
+project.fragment.lock.json
+
+# Rider
+.idea/
+*.sln.iml
+
+# ReSharper
+_ReSharper*/
+*.DotSettings.user
+
+# VS Code
+.vscode/
+
+# Coverage and test results
+TestResults/
+*.trx
+coverage/
+*.coverage
+*.coveragexml
+
+# Publish output
+publish/
+*.Publish.xml
+
+# Local app settings (may contain secrets)
+appsettings.Development.json
+local.settings.json
+secrets.json
+secrets.*.json
+
+# Entity Framework
+*.Backup
+
+# DotCover
+*.dotCover
+
+# Profiling
+*.psess
+*.vsp
+*.vspx
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Rider / JetBrains caches
+.idea/
+*.iml
+
+# Misc
+*.vsix
+*.db
+*.sqlite
+.DS_Store
+
+# Lock files from other ecosystems (if present)
+package-lock.json
+yarn.lock
+
+# Ignore publish and deployment files
+*.PublishProfile
+
+# User-specific files
+*.user
+*.userosscache
+*.suo
+
+# Git LFS temp files
+*.gitattributes.lock
+
+# End of file
