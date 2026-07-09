@@ -1,0 +1,4 @@
+interface:
+  display_name: "ThreadShelf Reactor"
+  short_description: "Build and test ThreadShelf with WinUI Reactor"
+  default_prompt: "Use $thread-shelf-reactor to modify or test the ThreadShelf WinUI Reactor app."
