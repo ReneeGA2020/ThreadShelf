@@ -9,13 +9,13 @@ description: Project-specific workflow for building, modifying, and testing the 
 
 Start by reading the relevant files instead of guessing:
 
-- `src/App.cs` for WinUI Reactor UI, selection, drag/drop, tag editor, filters, and details behavior.
-- `src/ThreadShelfData.cs` for data loading, local fallback, sidecar schema, tag normalization, filtering, and metadata persistence.
-- `src/CodexAppServerClient.cs` for Codex CLI `app-server` JSON-RPC integration.
+- `ThreadShelf.App/App.cs` for WinUI Reactor UI, selection, drag/drop, tag editor, filters, and details behavior.
+- `ThreadShelf.Core/ThreadShelfData.cs` for data loading, local fallback, sidecar schema, tag normalization, filtering, and metadata persistence.
+- `ThreadShelf.Core/CodexAppServerClient.cs` for Codex CLI `app-server` JSON-RPC integration.
 - `README.md` for user-facing capability and dependency wording.
 - If Reactor behavior is unclear and the source is available locally, inspect `E:\reactor-perf-lab\microsoft-ui-reactor`, especially `TESTING.md`, `tests/Reactor.AppTests`, and wrapper/event implementation files.
 
-Keep changes scoped to the app's existing pattern: single-file Reactor UI in `App.cs`, repository/data logic in `ThreadShelfData.cs`, and Codex native protocol logic in `CodexAppServerClient.cs`.
+Keep changes scoped to the app's existing pattern: single-file Reactor UI in `ThreadShelf.App/App.cs`, repository/data logic in `ThreadShelf.Core/ThreadShelfData.cs`, and Codex native protocol logic in `ThreadShelf.Core/CodexAppServerClient.cs`.
 
 ## Codex Integration Rules
 
@@ -66,7 +66,7 @@ Persist edits on clear user completion events.
 Build x64 before UI E2E:
 
 ```powershell
-dotnet build src\ThreadShelf.csproj -p:Platform=x64
+dotnet build ThreadShelf.App\ThreadShelf.App.csproj -p:Platform=x64
 ```
 
 Use `winapp ui` for automation when available. Prefer a temporary `CODEX_HOME` with fake sessions and sidecar data; never point E2E tests at the user's real Codex home unless explicitly requested.
@@ -88,7 +88,7 @@ Useful validation targets:
 
 Before finishing a ThreadShelf change:
 
-- Run `dotnet build src\ThreadShelf.csproj -p:Platform=x64`.
+- Run `dotnet build ThreadShelf.App\ThreadShelf.App.csproj -p:Platform=x64`.
 - If the change touches UI selection, drag/drop, tags, or save timing, run a `winapp ui` E2E check with temporary `CODEX_HOME`.
 - Confirm no `ThreadShelf` test process remains.
 - Confirm `git status --short` does not include ignored build artifacts.

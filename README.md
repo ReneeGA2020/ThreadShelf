@@ -26,7 +26,7 @@ it keeps its own sidecar index.
 ## Run
 
 ```powershell
-dotnet run --project src
+dotnet run --project ThreadShelf.App
 ```
 
 ## CLI
