@@ -45,11 +45,23 @@ class App : Component
         var (selectedId, setSelectedId) = UseState("");
         var (draft, setDraft) = UseState<EditDraft?>(null);
         var (titleDraft, setTitleDraft) = UseState("");
-        var (tagEditor, setTagEditor) = UseState(TagEditorDraft.Empty);
+        var (tagEditor, updateTagEditor) = UseReducer<TagEditorDraft>(TagEditorDraft.Empty);
         var (activePage, setActivePage) = UseState(ThreadsPage);
         var (pendingDeleteTag, setPendingDeleteTag) = UseState("");
         var (status, setStatus) = UseState("");
         var snapshotVersion = snapshot?.LoadedAt.UtcTicks ?? 0L;
+
+        void setTagEditor(TagEditorDraft next) =>
+            updateTagEditor(_ => next);
+
+        void setTagEditorColor(TagEditorDraft renderedDraft, global::Windows.UI.Color color)
+        {
+            var nextColor = TagColorFromWinUIColor(color);
+            updateTagEditor(current =>
+                SameTagEditorIdentity(current, renderedDraft)
+                    ? current with { Color = nextColor }
+                    : current);
+        }
 
         void Reload()
         {
@@ -420,6 +432,7 @@ class App : Component
                         tags,
                         tagEditor,
                         setTagEditor,
+                        setTagEditorColor,
                         SaveTagDefinition,
                         pendingDeleteTag,
                         setPendingDeleteTag,
@@ -1269,6 +1282,7 @@ class App : Component
         IReadOnlyList<TagDefinition> tags,
         TagEditorDraft tagEditor,
         Action<TagEditorDraft> setTagEditor,
+        Action<TagEditorDraft, global::Windows.UI.Color> setTagEditorColor,
         Action saveTagDefinition,
         string pendingDeleteTag,
         Action<string> setPendingDeleteTag,
@@ -1338,25 +1352,7 @@ class App : Component
                                             header: "Name")
                                         .AutomationId("TagEditorName")
                                         .Flex(shrink: 0),
-                                    FlexRow(
-                                        TextBox(
-                                                tagEditor.Color,
-                                                value => setTagEditor(tagEditor with { Color = value }),
-                                                placeholderText: "#0969DA",
-                                                header: "Color")
-                                            .AutomationId("TagEditorColor")
-                                            .Flex(grow: 1, basis: 0),
-                                        Border(Empty())
-                                            .Size(30, 30)
-                                            .CornerRadius(4)
-                                            .Background(ThreadShelfRepository.NormalizeTagColor(tagEditor.Color))
-                                            .WithBorder(Theme.CardStroke, 1)
-                                            .Flex(shrink: 0))
-                                    with
-                                    {
-                                        ColumnGap = 8,
-                                        AlignItems = FlexAlign.End
-                                    },
+                                    RenderTagColorPicker(tagEditor, setTagEditorColor),
                                     TextBox(
                                             tagEditor.Description,
                                             value => setTagEditor(tagEditor with { Description = value }),
@@ -1404,6 +1400,45 @@ class App : Component
             .Background(Theme.CardBackground)
             .WithBorder(Theme.CardStroke, 1)
             .Flex(grow: 1, basis: 0);
+    }
+
+    private static Element RenderTagColorPicker(
+        TagEditorDraft tagEditor,
+        Action<TagEditorDraft, global::Windows.UI.Color> setTagEditorColor)
+    {
+        var normalized = ThreadShelfRepository.NormalizeTagColor(tagEditor.Color);
+        return FlexColumn(
+                FlexRow(
+                    BodyStrong("Color").Flex(grow: 1, basis: 0),
+                    Border(Empty())
+                        .Size(30, 30)
+                        .CornerRadius(4)
+                        .Background(normalized)
+                        .WithBorder(Theme.CardStroke, 1)
+                        .Flex(shrink: 0),
+                    Caption(normalized)
+                        .AutomationId("TagEditorColorValue")
+                        .Foreground(Theme.SecondaryText)
+                        .Flex(shrink: 0))
+                with
+                {
+                    ColumnGap = 8,
+                    AlignItems = FlexAlign.Center
+                },
+                ColorPicker(
+                        TagColorToWinUIColor(tagEditor.Color),
+                        color => setTagEditorColor(tagEditor, color))
+                    .AutomationId("TagEditorColor")
+                    .AlphaEnabled(false)
+                    .ColorChannelTextInputVisible(false)
+                    .HexInputVisible(false)
+                    .MoreButtonVisible(false)
+                    .HAlign(HorizontalAlignment.Stretch)
+                    .Flex(shrink: 0))
+            with
+            {
+                RowGap = 8
+            };
     }
 
     private static Element TagToggleButton(TagDefinition tag, bool selected, Action toggle)
@@ -1564,6 +1599,10 @@ class App : Component
         && left.Favorite == right.Favorite
         && left.Tags.SequenceEqual(right.Tags, StringComparer.OrdinalIgnoreCase);
 
+    private static bool SameTagEditorIdentity(TagEditorDraft current, TagEditorDraft rendered) =>
+        string.Equals(current.EditingName, rendered.EditingName, StringComparison.Ordinal)
+        && string.Equals(current.Name, rendered.Name, StringComparison.Ordinal);
+
     private static string ForegroundFor(string color)
     {
         var normalized = ThreadShelfRepository.NormalizeTagColor(color);
@@ -1573,6 +1612,19 @@ class App : Component
         var luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
         return luminance > 0.58 ? "#1F2328" : "#FFFFFF";
     }
+
+    private static global::Windows.UI.Color TagColorToWinUIColor(string color)
+    {
+        var normalized = ThreadShelfRepository.NormalizeTagColor(color);
+        return global::Windows.UI.Color.FromArgb(
+            255,
+            Convert.ToByte(normalized.Substring(1, 2), 16),
+            Convert.ToByte(normalized.Substring(3, 2), 16),
+            Convert.ToByte(normalized.Substring(5, 2), 16));
+    }
+
+    private static string TagColorFromWinUIColor(global::Windows.UI.Color color) =>
+        $"#{color.R:X2}{color.G:X2}{color.B:X2}";
 
     private static string AutomationToken(string value)
     {
