@@ -1262,7 +1262,12 @@ class App : Component
     private static ButtonElement DetailsButton(string label, Action action) =>
         Button(label, action)
             .AutomationName(label)
-            .SubtleButton()
+            .Set(button =>
+            {
+                button.BorderThickness = new Thickness(1);
+                button.MinHeight = 32;
+                button.Padding = new Thickness(12, 5, 12, 6);
+            })
             .Resources(resources => resources
                 .Set("ButtonBackground", Theme.Ref("ControlFillColorDefaultBrush"))
                 .Set("ButtonBackgroundPointerOver", Theme.Ref("ControlFillColorSecondaryBrush"))
@@ -1272,8 +1277,8 @@ class App : Component
                 .Set("ButtonForegroundPointerOver", Theme.PrimaryText)
                 .Set("ButtonForegroundPressed", Theme.PrimaryText)
                 .Set("ButtonForegroundDisabled", Theme.Ref("TextFillColorDisabledBrush"))
-                .Set("ButtonBorderBrush", Theme.ControlStroke)
-                .Set("ButtonBorderBrushPointerOver", Theme.ControlStrokeSecondary)
+                .Set("ButtonBorderBrush", Theme.Ref("ControlStrongStrokeColorDefaultBrush"))
+                .Set("ButtonBorderBrushPointerOver", Theme.Ref("ControlStrongStrokeColorDefaultBrush"))
                 .Set("ButtonBorderBrushPressed", Theme.ControlStrokeSecondary)
                 .Set("ButtonBorderBrushDisabled", Theme.Ref("ControlStrokeColorDefaultBrush")));
 
