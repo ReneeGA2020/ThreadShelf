@@ -155,9 +155,12 @@ The sidecar path is shown at the lower left of the window. The language preferen
 
 ## Development checks
 
+The code is organized by responsibility: desktop entry/composition lives in `ThreadShelf.App/Program.cs` and `App.cs`, page state in `State/ThreadShelfController.cs`, and UI features in `Components/`. Core keeps shared use cases, sidecar persistence, providers, and native/system actions in `ThreadShelfService.cs`, `Persistence/`, `Sources/`, and `Native/`. CLI and MCP bootstrap, dispatch/catalog, and handlers are separate files as well. Add MCP tools through the descriptor registry in `ThreadShelf.Mcp/ToolCatalog.cs` so each schema stays bound to its handler.
+
 ```powershell
 dotnet test tests\ThreadShelf.Tests\ThreadShelf.Tests.csproj
 dotnet build ThreadShelf.App\ThreadShelf.App.csproj -p:Platform=x64
+powershell -ExecutionPolicy Bypass -File .\.codex\skills\thread-shelf-reactor\scripts\Test-ThreadShelfMcp.ps1
 ```
 
 Licensed under the [MIT License](LICENSE).

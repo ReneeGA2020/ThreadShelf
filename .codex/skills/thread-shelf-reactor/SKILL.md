@@ -15,15 +15,24 @@ description: Develop and test the ThreadShelf WinUI Reactor repository, or use i
 
 Read only the files relevant to the change:
 
-- `ThreadShelf.App/App.cs`: Reactor UI, localization calls, selection, filters, drag/drop, context menus, dialogs, and details behavior.
-- `ThreadShelf.Core/ThreadShelfData.cs`: loading, fallback, sidecar schema, project aliases, normalization, filtering, and persistence.
+- `ThreadShelf.App/Program.cs` / `App.cs`: process entry and top-level Reactor composition.
+- `ThreadShelf.App/State/ThreadShelfController.cs`: page state, Effects, selection/edit drafts, refresh, use-case calls, and async operation coordination.
+- `ThreadShelf.App/Components/*.cs`: sidebar, thread list/rows, details, tag manager, rename dialog, AutomationIds, and UI helpers.
+- `ThreadShelf.Core/Models/ThreadModels.cs` / `Queries/ThreadFilters.cs`: domain records, snapshot helpers, and pure filtering/project summaries.
+- `ThreadShelf.Core/ThreadShelfRepository.cs`: provider fallback and snapshot assembly façade.
+- `ThreadShelf.Core/Persistence/*.cs`: sidecar schema, normalization, atomic writes, project aliases, folders, and tag-reference migrations.
+- `ThreadShelf.Core/Sources/*.cs`: Codex app-server and local JSONL thread providers.
+- `ThreadShelf.Core/Native/*.cs`: native Codex mutations plus Explorer/URI system actions.
+- `ThreadShelf.Core/ThreadShelfService.cs`: shared UI/CLI/MCP application use cases and validation semantics.
 - `ThreadShelf.Core/CodexAppServerClient.cs`: `codex app-server` JSON-RPC and CLI resolution.
 - `ThreadShelf.Core/CodexInteractiveLauncher.cs`: shared CLI discovery plus structured visible-terminal plans for new/resumed tasks.
-- `ThreadShelf.Core/ThreadShelfCommands.cs`: shared CLI/MCP handlers, validation, envelopes, and provider errors.
-- `ThreadShelf.Mcp/Program.cs`: authoritative MCP tool catalog and input schemas.
+- `ThreadShelf.Core/ThreadShelfCommands.cs`: transport contracts, command adapter, envelopes, and provider error mapping.
+- `ThreadShelf.Cli/Program.cs` / `CommandDispatcher.cs` / `ParsedArgs.cs`: CLI bootstrap, dispatch, usage, and argument parsing.
+- `ThreadShelf.Mcp/Program.cs` / `ThreadShelfMcpServer.cs`: stdio bootstrap and JSON-RPC server loop.
+- `ThreadShelf.Mcp/ToolCatalog.cs` / `ToolHandlers.cs`: authoritative descriptor registry, input schemas, and bound handlers.
 - `README.md` / `README.en.md`: user-facing capability and dependency wording.
 
-Keep UI in `App.cs`, repository/data rules in `ThreadShelfData.cs`, native protocol code in `CodexAppServerClient.cs`, and shared automation behavior in `ThreadShelfCommands.cs`.
+Keep page state in the controller, rendering in component feature files, shared use-case semantics in `ThreadShelfService`, sidecar writes in `Persistence`, provider reads in `Sources`, native/system actions in `Native`, and public automation envelopes in the command adapter. Add MCP tools through the descriptor registry so catalog schemas and handlers remain bound by construction.
 
 If Reactor behavior is unclear, inspect the local Reactor source at `E:\reactor-perf-lab\microsoft-ui-reactor`, especially `TESTING.md`, wrapper/event code, and `tests/Reactor.AppTests`.
 

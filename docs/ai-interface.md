@@ -55,7 +55,7 @@ After configuration, ask the MCP host to refresh tools. For a raw stdio check:
   .\ThreadShelf.Mcp\bin\Debug\net10.0\ThreadShelf.Mcp.exe
 ```
 
-The current catalog contains 15 tools. The response schemas returned by `tools/list` are authoritative; re-run it after changing `ThreadShelf.Mcp/Program.cs`.
+The current catalog contains 15 tools. The response schemas returned by `tools/list` are authoritative. Add or edit tools through `ThreadShelf.Mcp/ToolCatalog.cs`, where every descriptor binds its schema directly to a method in `ToolHandlers.cs`; re-run discovery and the registry consistency test after either file changes.
 
 ## Tool catalog
 

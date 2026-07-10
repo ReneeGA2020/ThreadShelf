@@ -155,9 +155,12 @@ dotnet run --project ThreadShelf.Mcp
 
 ## 开发验证
 
+代码按职责组织：桌面入口与顶层组合位于 `ThreadShelf.App/Program.cs` 和 `App.cs`，页面状态在 `State/ThreadShelfController.cs`，各 UI feature 在 `Components/`；Core 的共享用例、sidecar、provider 与 native/system actions 分别位于 `ThreadShelfService.cs`、`Persistence/`、`Sources/` 和 `Native/`；CLI 与 MCP 的 bootstrap、dispatch/catalog 和 handler 也保持独立文件。新增 MCP 工具时通过 `ThreadShelf.Mcp/ToolCatalog.cs` 的 descriptor registry 同时绑定 schema 与 handler。
+
 ```powershell
 dotnet test tests\ThreadShelf.Tests\ThreadShelf.Tests.csproj
 dotnet build ThreadShelf.App\ThreadShelf.App.csproj -p:Platform=x64
+powershell -ExecutionPolicy Bypass -File .\.codex\skills\thread-shelf-reactor\scripts\Test-ThreadShelfMcp.ps1
 ```
 
 项目采用 [MIT License](LICENSE)。
