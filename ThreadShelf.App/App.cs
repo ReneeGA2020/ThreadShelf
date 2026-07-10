@@ -1292,11 +1292,13 @@ internal class App : Component
                             .Flex(shrink: 0),
                         () => Empty()),
                     FlexRow(
-                        DetailsButton("Open", OpenInCodex)
+                        Button("Open", OpenInCodex)
                             .AutomationId("OpenInCodexButton")
+                            .SubtleButton()
                             .Flex(grow: 1, basis: 0),
-                        DetailsButton("Reveal", RevealJsonl)
+                        Button("Reveal", RevealJsonl)
                             .AutomationId("RevealFileButton")
+                            .SubtleButton()
                             .Flex(grow: 1, basis: 0))
                     with
                     {
@@ -1354,29 +1356,25 @@ internal class App : Component
                             If(
                                 selectedButtons.Length == 0,
                                 () => Caption("No tags selected").Foreground(Theme.SecondaryText),
-                                () => ScrollViewer(
-                                        FlexRow(selectedButtons) with
+                                () => FlexRow(selectedButtons) with
+                                {
+                                    ColumnGap = 6,
+                                    RowGap = 6,
+                                    AlignItems = FlexAlign.Center,
+                                    Wrap = FlexWrap.Wrap
+                                }),
+                            If(
+                                availableButtons.Length == 0,
+                                () => Empty(),
+                                () => FlexColumn(
+                                        BodyStrong("Add tags"),
+                                        FlexRow(availableButtons) with
                                         {
                                             ColumnGap = 6,
                                             RowGap = 6,
                                             AlignItems = FlexAlign.Center,
                                             Wrap = FlexWrap.Wrap
                                         })
-                                    .MaxHeight(74)),
-                            If(
-                                availableButtons.Length == 0,
-                                () => Empty(),
-                                () => FlexColumn(
-                                        BodyStrong("Add tags"),
-                                        ScrollViewer(
-                                                FlexRow(availableButtons) with
-                                                {
-                                                    ColumnGap = 6,
-                                                    RowGap = 6,
-                                                    AlignItems = FlexAlign.Center,
-                                                    Wrap = FlexWrap.Wrap
-                                                })
-                                            .MaxHeight(92))
                                     with
                                 {
                                     RowGap = 6
