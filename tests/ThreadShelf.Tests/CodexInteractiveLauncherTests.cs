@@ -8,8 +8,6 @@ public sealed class ProcessEnvironmentCollection;
 [Collection("Process environment")]
 public sealed class CodexInteractiveLauncherTests : IDisposable
 {
-    private readonly string? _originalCli = Environment.GetEnvironmentVariable("THREADSHELF_CODEX_CLI");
-    private readonly string? _originalTerminal = Environment.GetEnvironmentVariable("THREADSHELF_TERMINAL");
     private readonly string? _originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
     private readonly string? _originalLog = Environment.GetEnvironmentVariable("THREADSHELF_FAKE_LAUNCH_LOG");
     private readonly string _root = Path.Combine(
@@ -17,14 +15,56 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
         "threadshelf-launch-tests-" + Guid.NewGuid().ToString("N"));
 
     [Fact]
-    public void NewTaskPlanUsesStructuredArgumentsAndRealWorkspace()
+    public void DesktopAppIsPreferredWhenDesktopAndCliAreAvailable()
+    {
+        var workspace = CreateWorkspace("桌面 app & CLI");
+        var cliProbeCount = 0;
+        var launcher = new CodexInteractiveLauncher(
+            desktopAppAvailable: () => true,
+            cliExecutable: () =>
+            {
+                cliProbeCount++;
+                return FakeExecutable();
+            },
+            windowsTerminalExecutable: () => null);
+
+        var plan = launcher.CreateResumePlan(workspace, "thread/中文 & safe");
+
+        Assert.Equal(CodexLaunchProvider.DesktopApp, plan.Provider);
+        Assert.Equal(CodexTerminalKind.None, plan.TerminalKind);
+        Assert.Equal("codex://threads/thread%2F%E4%B8%AD%E6%96%87%20%26%20safe", plan.Executable);
+        Assert.Empty(plan.Arguments);
+        Assert.Null(plan.CodexExecutable);
+        Assert.Equal(0, cliProbeCount);
+    }
+
+    [Fact]
+    public void DesktopNewTaskPlanEscapesAbsoluteWorkspacePath()
     {
         var workspace = CreateWorkspace("项目 with spaces & symbols");
-        Environment.SetEnvironmentVariable("THREADSHELF_CODEX_CLI", FakeExecutable());
-        Environment.SetEnvironmentVariable("THREADSHELF_TERMINAL", "direct");
+        var launcher = new CodexInteractiveLauncher(
+            desktopAppAvailable: () => true,
+            cliExecutable: () => null,
+            windowsTerminalExecutable: () => null);
 
-        var plan = new CodexInteractiveLauncher().CreateNewTaskPlan(workspace);
+        var plan = launcher.CreateNewTaskPlan(workspace);
 
+        Assert.Equal(CodexLaunchProvider.DesktopApp, plan.Provider);
+        Assert.Equal(
+            $"codex://threads/new?path={Uri.EscapeDataString(Path.GetFullPath(workspace))}",
+            plan.Executable);
+        Assert.Equal(Path.GetFullPath(workspace), plan.WorkingDirectory);
+    }
+
+    [Fact]
+    public void CliIsUsedWhenDesktopAppIsUnavailable()
+    {
+        var workspace = CreateWorkspace("项目 with spaces & symbols");
+        var launcher = CliOnlyLauncher();
+
+        var plan = launcher.CreateNewTaskPlan(workspace);
+
+        Assert.Equal(CodexLaunchProvider.Cli, plan.Provider);
         Assert.Equal(CodexTerminalKind.DirectConsole, plan.TerminalKind);
         Assert.Equal(Path.GetFullPath(workspace), plan.WorkingDirectory);
         Assert.Equal(["-C", Path.GetFullPath(workspace)], plan.Arguments);
@@ -32,14 +72,12 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
     }
 
     [Fact]
-    public void ResumePlanKeepsSessionIdAsOneArgument()
+    public void CliResumePlanKeepsSessionIdAsOneArgument()
     {
         var workspace = CreateWorkspace("继续任务 [special] & 中文");
         const string threadId = "abc 123;&not-a-command";
-        Environment.SetEnvironmentVariable("THREADSHELF_CODEX_CLI", FakeExecutable());
-        Environment.SetEnvironmentVariable("THREADSHELF_TERMINAL", "direct");
 
-        var plan = new CodexInteractiveLauncher().CreateResumePlan(workspace, threadId);
+        var plan = CliOnlyLauncher().CreateResumePlan(workspace, threadId);
 
         Assert.Equal(
             ["resume", "-C", Path.GetFullPath(workspace), threadId],
@@ -55,6 +93,7 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
             ["resume", "-C", @"C:\工作 files\R&D;safe", "session;&safe"],
             @"C:\Program Files\WindowsApps\wt.exe");
 
+        Assert.Equal(CodexLaunchProvider.Cli, plan.Provider);
         Assert.Equal(CodexTerminalKind.WindowsTerminal, plan.TerminalKind);
         Assert.Equal(
             [
@@ -70,15 +109,59 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
     }
 
     [Fact]
-    public void MissingWorkspaceIsUnavailableBeforeCliCapability()
+    public void NeitherDesktopNorCliIsUnavailable()
     {
-        Environment.SetEnvironmentVariable("THREADSHELF_CODEX_CLI", FakeExecutable());
-        var workspace = Path.Combine(_root, "does-not-exist");
+        var workspace = CreateWorkspace("no provider");
+        var launcher = new CodexInteractiveLauncher(
+            desktopAppAvailable: () => false,
+            cliExecutable: () => null,
+            windowsTerminalExecutable: () => null);
 
-        var availability = new CodexInteractiveLauncher().CheckAvailability(workspace);
+        var availability = launcher.CheckNewTaskAvailability(workspace);
+
+        Assert.False(availability.CanLaunch);
+        Assert.Equal(CodexLaunchProblem.CodexUnavailable, availability.Problem);
+        Assert.Equal(CodexLaunchProvider.None, availability.Provider);
+    }
+
+    [Fact]
+    public void MissingWorkspaceIsUnavailableBeforeProviderCapability()
+    {
+        var launcher = new CodexInteractiveLauncher(
+            desktopAppAvailable: () => true,
+            cliExecutable: () => FakeExecutable(),
+            windowsTerminalExecutable: () => null);
+
+        var availability = launcher.CheckNewTaskAvailability("  ");
+
+        Assert.False(availability.CanLaunch);
+        Assert.Equal(CodexLaunchProblem.WorkspaceMissing, availability.Problem);
+    }
+
+    [Fact]
+    public void NonexistentWorkspaceIsUnavailableBeforeProviderCapability()
+    {
+        var workspace = Path.Combine(_root, "does-not-exist");
+        var launcher = new CodexInteractiveLauncher(
+            desktopAppAvailable: () => true,
+            cliExecutable: () => FakeExecutable(),
+            windowsTerminalExecutable: () => null);
+
+        var availability = launcher.CheckNewTaskAvailability(workspace);
 
         Assert.False(availability.CanLaunch);
         Assert.Equal(CodexLaunchProblem.WorkspaceNotFound, availability.Problem);
+    }
+
+    [Fact]
+    public void MissingThreadIdMakesResumeUnavailable()
+    {
+        var workspace = CreateWorkspace("missing id");
+
+        var availability = CliOnlyLauncher().CheckResumeAvailability(workspace, " ");
+
+        Assert.False(availability.CanLaunch);
+        Assert.Equal(CodexLaunchProblem.ThreadIdMissing, availability.Problem);
     }
 
     [Fact]
@@ -86,20 +169,31 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
     {
         var workspace = CreateWorkspace("自动化 two 空格 & safe");
         var logPath = Path.Combine(_root, "launch.jsonl");
-        Environment.SetEnvironmentVariable("THREADSHELF_CODEX_CLI", FakeExecutable());
-        Environment.SetEnvironmentVariable("THREADSHELF_TERMINAL", "direct");
         Environment.SetEnvironmentVariable("CODEX_HOME", _root);
         Environment.SetEnvironmentVariable("THREADSHELF_FAKE_LAUNCH_LOG", logPath);
 
-        new CodexInteractiveLauncher().ResumeThread(workspace, "session-中文 & safe");
+        CliOnlyLauncher().ResumeThread(workspace, "session-中文 & safe");
 
         for (var attempt = 0; attempt < 50 && !File.Exists(logPath); attempt++)
         {
             await Task.Delay(50);
         }
 
-        Assert.True(File.Exists(logPath));
-        using var document = JsonDocument.Parse(File.ReadLines(logPath).Single());
+        string? logLine = null;
+        for (var attempt = 0; attempt < 50 && logLine is null; attempt++)
+        {
+            try
+            {
+                logLine = File.ReadLines(logPath).Single();
+            }
+            catch (IOException)
+            {
+                await Task.Delay(50);
+            }
+        }
+
+        Assert.NotNull(logLine);
+        using var document = JsonDocument.Parse(logLine);
         var root = document.RootElement;
         Assert.EndsWith("ThreadShelf.FakeCodexCli.exe", root.GetProperty("executable").GetString(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(Path.GetFullPath(workspace), root.GetProperty("workingDirectory").GetString());
@@ -110,8 +204,6 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("THREADSHELF_CODEX_CLI", _originalCli);
-        Environment.SetEnvironmentVariable("THREADSHELF_TERMINAL", _originalTerminal);
         Environment.SetEnvironmentVariable("CODEX_HOME", _originalCodexHome);
         Environment.SetEnvironmentVariable("THREADSHELF_FAKE_LAUNCH_LOG", _originalLog);
         if (Directory.Exists(_root))
@@ -119,6 +211,12 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
             Directory.Delete(_root, recursive: true);
         }
     }
+
+    private CodexInteractiveLauncher CliOnlyLauncher() =>
+        new(
+            desktopAppAvailable: () => false,
+            cliExecutable: () => FakeExecutable(),
+            windowsTerminalExecutable: () => null);
 
     private string CreateWorkspace(string name)
     {
@@ -155,5 +253,53 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
         }
 
         throw new DirectoryNotFoundException("ThreadShelf repository root was not found.");
+    }
+}
+
+public sealed class ThreadShelfSystemActionsTests : IDisposable
+{
+    private readonly string _root = Path.Combine(
+        Path.GetTempPath(),
+        "threadshelf-folder-tests-" + Guid.NewGuid().ToString("N"));
+
+    [Fact]
+    public void OpenFolderPlanKeepsSpecialWorkspaceAsOneArgument()
+    {
+        var workspace = Path.Combine(_root, "folder with 空格 & (special);safe");
+        Directory.CreateDirectory(workspace);
+
+        var plan = ThreadShelfSystemActions.CreateOpenFolderPlan(workspace);
+
+        Assert.Equal("explorer.exe", plan.Executable);
+        Assert.Equal([Path.GetFullPath(workspace)], plan.Arguments);
+    }
+
+    [Theory]
+    [InlineData(null, FolderOpenProblem.PathMissing)]
+    [InlineData("", FolderOpenProblem.PathMissing)]
+    public void MissingFolderIsUnavailable(string? path, FolderOpenProblem expected)
+    {
+        var availability = ThreadShelfSystemActions.CheckFolderAvailability(path);
+
+        Assert.False(availability.CanOpen);
+        Assert.Equal(expected, availability.Problem);
+    }
+
+    [Fact]
+    public void NonexistentFolderIsUnavailable()
+    {
+        var availability = ThreadShelfSystemActions.CheckFolderAvailability(
+            Path.Combine(_root, "missing"));
+
+        Assert.False(availability.CanOpen);
+        Assert.Equal(FolderOpenProblem.DirectoryNotFound, availability.Problem);
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_root))
+        {
+            Directory.Delete(_root, recursive: true);
+        }
     }
 }

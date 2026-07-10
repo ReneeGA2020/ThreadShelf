@@ -145,6 +145,8 @@ Omitted `folder` or `tags` preserves that field. An empty folder clears it; an e
 
 ## Responses and provider boundaries
 
+The desktop UI's workspace link and interactive Resume/New task actions are not MCP or CLI tools. They do not change `source.provider`: the shared interactive launcher first validates the workspace (and thread ID for Resume), prefers a registered Codex desktop app, and falls back to a visible CLI process with structured arguments. Automation agents should continue to use the catalog above for organization and native app-server mutations; they must not imitate UI deep links as a successful MCP mutation.
+
 MCP returns a standard MCP text content item whose text is a JSON envelope:
 
 ```json

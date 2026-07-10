@@ -4,11 +4,6 @@ namespace ThreadShelf;
 
 internal sealed class SidecarStore(string sidecarPath)
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true
-    };
-
     public string SidecarPath { get; } = sidecarPath;
 
     public ThreadShelfDocument Load()
@@ -22,7 +17,7 @@ internal sealed class SidecarStore(string sidecarPath)
         {
             using var stream = File.OpenRead(SidecarPath);
             return ThreadShelfRules.NormalizeDocument(
-                JsonSerializer.Deserialize<ThreadShelfDocument>(stream, JsonOptions)
+                JsonSerializer.Deserialize(stream, ThreadShelfJsonContext.Default.ThreadShelfDocument)
                 ?? new ThreadShelfDocument());
         }
         catch (JsonException)
@@ -248,7 +243,7 @@ internal sealed class SidecarStore(string sidecarPath)
         var tempPath = $"{SidecarPath}.tmp";
         using (var stream = File.Create(tempPath))
         {
-            JsonSerializer.Serialize(stream, document, JsonOptions);
+            JsonSerializer.Serialize(stream, document, ThreadShelfJsonContext.Default.ThreadShelfDocument);
         }
 
         File.Move(tempPath, SidecarPath, overwrite: true);

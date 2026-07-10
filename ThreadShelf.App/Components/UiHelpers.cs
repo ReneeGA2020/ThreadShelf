@@ -32,6 +32,65 @@ internal sealed partial class ThreadShelfController
         };
     }
 
+    private static FlexElement WorkspaceMetadataLine(string? workspace, Action<string> setStatus)
+    {
+        var availability = ThreadShelfSystemActions.CheckFolderAvailability(workspace);
+
+        void OpenWorkspace()
+        {
+            try
+            {
+                var plan = ThreadShelfSystemActions.OpenFolder(workspace);
+                setStatus(T("WorkspaceOpened", plan.Arguments[0]));
+            }
+            catch (FolderOpenException ex)
+            {
+                setStatus(T("WorkspaceOpenFailed", FolderOpenProblemText(ex.Problem, ex.Path)));
+            }
+            catch (Exception ex)
+            {
+                setStatus(T("WorkspaceOpenFailed", ex.Message));
+            }
+        }
+
+        var problemText = FolderOpenProblemText(availability.Problem, availability.Path);
+        var line = FlexRow(
+            Caption(T("Workspace")).Foreground(Theme.SecondaryText).Width(76).Flex(shrink: 0),
+            HyperlinkButton(EmptyText(workspace ?? ""), onClick: OpenWorkspace)
+                .AutomationId("WorkspaceFolderLink")
+                .AutomationName(availability.CanOpen
+                    ? T("WorkspaceOpenAutomation", availability.Path)
+                    : T("WorkspaceOpenUnavailableAutomation", problemText))
+                .ToolTip(availability.CanOpen ? T("WorkspaceOpenToolTip") : problemText)
+                .IsEnabled(availability.CanOpen)
+                .TextLink()
+                .Set(button =>
+                {
+                    button.HorizontalContentAlignment = HorizontalAlignment.Left;
+                    button.Padding = new Thickness(0);
+                    button.MinHeight = 0;
+                })
+                .Flex(grow: 1, basis: 0))
+        with
+        {
+            ColumnGap = 8,
+            AlignItems = FlexAlign.Center
+        };
+
+        return availability.CanOpen
+            ? line
+            : FlexColumn(
+                    line,
+                    Caption(problemText)
+                        .Foreground(Theme.SystemAttention)
+                        .TextWrapping()
+                        .Margin(84, 0, 0, 0))
+                with
+                {
+                    RowGap = 2
+                };
+    }
+
     private static BorderElement Pill(string text, ThemeRef background)
     {
         return Border(Caption(text).Foreground(Theme.PrimaryText))
@@ -110,7 +169,7 @@ internal sealed partial class ThreadShelfController
 
     private static string ResumeToolTip(CodexInteractiveLauncher launcher, CodexThread thread)
     {
-        var availability = launcher.CheckAvailability(thread.Workspace);
+        var availability = launcher.CheckResumeAvailability(thread.Workspace, thread.Id);
         return availability.CanLaunch
             ? T("ResumeToolTip")
             : CodexLaunchProblemText(availability.Problem, availability.Workspace);
@@ -118,7 +177,7 @@ internal sealed partial class ThreadShelfController
 
     private static string ResumeAutomationName(CodexInteractiveLauncher launcher, CodexThread thread)
     {
-        var availability = launcher.CheckAvailability(thread.Workspace);
+        var availability = launcher.CheckResumeAvailability(thread.Workspace, thread.Id);
         return availability.CanLaunch
             ? T("ResumeAutomation", ThreadTitle(thread))
             : T(
@@ -130,18 +189,27 @@ internal sealed partial class ThreadShelfController
     private static string CodexLaunchError(Exception exception) =>
         exception is CodexLaunchException launchException
             ? launchException.Problem == CodexLaunchProblem.None
-                ? T("TerminalStartFailed", launchException.InnerException?.Message ?? launchException.Message)
+                ? T("CodexStartFailed", launchException.InnerException?.Message ?? launchException.Message)
                 : CodexLaunchProblemText(launchException.Problem, launchException.Detail ?? "")
             : exception.Message;
 
     private static string CodexLaunchProblemText(CodexLaunchProblem problem, string workspace) =>
         problem switch
         {
-            CodexLaunchProblem.CliNotFound => T("CodexCliNotFound"),
+            CodexLaunchProblem.CodexUnavailable => T("CodexProviderNotFound"),
             CodexLaunchProblem.WorkspaceMissing => T("WorkspaceMissingLaunch"),
             CodexLaunchProblem.WorkspaceNotFound => T("WorkspaceNotFoundLaunch", workspace),
             CodexLaunchProblem.ThreadIdMissing => T("ThreadIdMissingLaunch"),
             _ => T("CodexLaunchUnavailable")
+        };
+
+    private static string FolderOpenProblemText(FolderOpenProblem problem, string path) =>
+        problem switch
+        {
+            FolderOpenProblem.PathMissing => T("WorkspacePathMissing"),
+            FolderOpenProblem.DirectoryNotFound => T("WorkspaceDirectoryNotFound", path),
+            FolderOpenProblem.StartFailed => T("WorkspaceExplorerStartFailed"),
+            _ => T("WorkspaceOpenUnavailable")
         };
 
     private static bool SameMetadata(ThreadMetadata left, ThreadMetadata right)

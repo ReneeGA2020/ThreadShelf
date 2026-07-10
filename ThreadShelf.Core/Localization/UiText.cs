@@ -68,11 +68,6 @@ public static partial class UiText
 
 public sealed class AppPreferenceStore
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true
-    };
-
     public string Path { get; }
 
     public AppPreferenceStore(string codexHome)
@@ -90,7 +85,9 @@ public sealed class AppPreferenceStore
             }
 
             using var stream = File.OpenRead(Path);
-            var preferences = JsonSerializer.Deserialize<AppPreferences>(stream, JsonOptions);
+            var preferences = JsonSerializer.Deserialize(
+                stream,
+                ThreadShelfJsonContext.Default.AppPreferences);
             return UiText.NormalizeLanguagePreference(preferences?.Language);
         }
         catch (IOException)
@@ -121,14 +118,14 @@ public sealed class AppPreferenceStore
             JsonSerializer.Serialize(
                 stream,
                 new AppPreferences { Language = UiText.NormalizeLanguagePreference(preference) },
-                JsonOptions);
+                ThreadShelfJsonContext.Default.AppPreferences);
         }
 
         File.Move(tempPath, Path, overwrite: true);
     }
+}
 
-    private sealed record AppPreferences
-    {
-        public string Language { get; init; } = UiText.SystemLanguage;
-    }
+internal sealed record AppPreferences
+{
+    public string Language { get; init; } = UiText.SystemLanguage;
 }

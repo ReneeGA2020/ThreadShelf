@@ -1,18 +1,29 @@
 using System.Diagnostics;
+using System.Security;
+
+using Microsoft.Win32;
 
 namespace ThreadShelf;
 
 public enum CodexLaunchProblem
 {
     None,
-    CliNotFound,
+    CodexUnavailable,
     WorkspaceMissing,
     WorkspaceNotFound,
     ThreadIdMissing
 }
 
+public enum CodexLaunchProvider
+{
+    None,
+    DesktopApp,
+    Cli
+}
+
 public enum CodexTerminalKind
 {
+    None,
     WindowsTerminal,
     DirectConsole
 }
@@ -21,14 +32,16 @@ public sealed record CodexLaunchAvailability(
     bool CanLaunch,
     CodexLaunchProblem Problem,
     string Workspace,
+    CodexLaunchProvider Provider,
     string? CodexExecutable);
 
 public sealed record CodexLaunchPlan(
+    CodexLaunchProvider Provider,
     string Executable,
     IReadOnlyList<string> Arguments,
     string WorkingDirectory,
     CodexTerminalKind TerminalKind,
-    string CodexExecutable);
+    string? CodexExecutable);
 
 public static class CodexCliLocator
 {
@@ -126,65 +139,133 @@ public static class CodexCliLocator
     }
 }
 
-public sealed class CodexInteractiveLauncher
+public static class CodexDesktopLocator
 {
-    public CodexLaunchAvailability CheckAvailability(string? workspace)
+    private const string AppModelPackagesKey =
+        @"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
+
+    public static bool IsAvailable()
     {
-        if (string.IsNullOrWhiteSpace(workspace))
+        if (!OperatingSystem.IsWindows())
         {
-            return new(false, CodexLaunchProblem.WorkspaceMissing, "", null);
+            return false;
         }
 
-        string fullWorkspace;
         try
         {
-            fullWorkspace = Path.GetFullPath(workspace);
+            if (Registry.ClassesRoot.OpenSubKey("codex") is not null)
+            {
+                return true;
+            }
+
+            using var packages = Registry.CurrentUser.OpenSubKey(AppModelPackagesKey);
+            if (packages is null)
+            {
+                return false;
+            }
+
+            foreach (var packageName in packages.GetSubKeyNames())
+            {
+                using var associations = packages.OpenSubKey(
+                    $@"{packageName}\App\Capabilities\URLAssociations");
+                if (associations?.GetValue("codex") is string value
+                    && !string.IsNullOrWhiteSpace(value))
+                {
+                    return true;
+                }
+            }
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException
+                or SecurityException)
         {
-            return new(false, CodexLaunchProblem.WorkspaceNotFound, workspace, null);
         }
 
-        if (!Directory.Exists(fullWorkspace))
-        {
-            return new(false, CodexLaunchProblem.WorkspaceNotFound, fullWorkspace, null);
-        }
+        return false;
+    }
+}
 
-        var codexExecutable = CodexCliLocator.TryResolveExecutable();
-        return codexExecutable is null
-            ? new(false, CodexLaunchProblem.CliNotFound, fullWorkspace, null)
-            : new(true, CodexLaunchProblem.None, fullWorkspace, codexExecutable);
+public sealed class CodexInteractiveLauncher
+{
+    private readonly Func<bool> _desktopAppAvailable;
+    private readonly Func<string?> _cliExecutable;
+    private readonly Func<string?> _windowsTerminalExecutable;
+    private readonly Action<CodexLaunchPlan> _start;
+
+    public CodexInteractiveLauncher(
+        Func<bool>? desktopAppAvailable = null,
+        Func<string?>? cliExecutable = null,
+        Func<string?>? windowsTerminalExecutable = null,
+        Action<CodexLaunchPlan>? start = null)
+    {
+        _desktopAppAvailable = desktopAppAvailable ?? CodexDesktopLocator.IsAvailable;
+        _cliExecutable = cliExecutable ?? CodexCliLocator.TryResolveExecutable;
+        _windowsTerminalExecutable = windowsTerminalExecutable ?? ResolveWindowsTerminal;
+        _start = start ?? Start;
     }
 
-    public CodexLaunchPlan LaunchNewTask(string workspace) =>
-        Start(CreateNewTaskPlan(workspace));
+    public CodexLaunchAvailability CheckAvailability(string? workspace) =>
+        CheckNewTaskAvailability(workspace);
 
-    public CodexLaunchPlan ResumeThread(string workspace, string threadId) =>
-        Start(CreateResumePlan(workspace, threadId));
+    public CodexLaunchAvailability CheckNewTaskAvailability(string? workspace) =>
+        CheckWorkspaceAndProvider(workspace);
+
+    public CodexLaunchAvailability CheckResumeAvailability(string? workspace, string? threadId)
+    {
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            return new(
+                false,
+                CodexLaunchProblem.ThreadIdMissing,
+                NormalizeWorkspaceForDetail(workspace),
+                CodexLaunchProvider.None,
+                null);
+        }
+
+        return CheckWorkspaceAndProvider(workspace);
+    }
+
+    public CodexLaunchPlan LaunchNewTask(string workspace)
+    {
+        var plan = CreateNewTaskPlan(workspace);
+        _start(plan);
+        return plan;
+    }
+
+    public CodexLaunchPlan ResumeThread(string workspace, string threadId)
+    {
+        var plan = CreateResumePlan(workspace, threadId);
+        _start(plan);
+        return plan;
+    }
 
     public CodexLaunchPlan CreateNewTaskPlan(string workspace)
     {
-        var availability = RequireAvailability(workspace);
-        return BuildPlan(
-            availability.Workspace,
-            availability.CodexExecutable!,
-            ["-C", availability.Workspace],
-            ResolveWindowsTerminal());
+        var availability = RequireAvailability(CheckNewTaskAvailability(workspace));
+        return availability.Provider == CodexLaunchProvider.DesktopApp
+            ? DesktopPlan(
+                $"codex://threads/new?path={Uri.EscapeDataString(availability.Workspace)}",
+                availability.Workspace)
+            : BuildPlan(
+                availability.Workspace,
+                availability.CodexExecutable!,
+                ["-C", availability.Workspace],
+                _windowsTerminalExecutable());
     }
 
     public CodexLaunchPlan CreateResumePlan(string workspace, string threadId)
     {
-        if (string.IsNullOrWhiteSpace(threadId))
-        {
-            throw new CodexLaunchException(CodexLaunchProblem.ThreadIdMissing, "The thread ID is required.");
-        }
-
-        var availability = RequireAvailability(workspace);
-        return BuildPlan(
-            availability.Workspace,
-            availability.CodexExecutable!,
-            ["resume", "-C", availability.Workspace, threadId],
-            ResolveWindowsTerminal());
+        var availability = RequireAvailability(CheckResumeAvailability(workspace, threadId));
+        return availability.Provider == CodexLaunchProvider.DesktopApp
+            ? DesktopPlan(
+                $"codex://threads/{Uri.EscapeDataString(threadId)}",
+                availability.Workspace)
+            : BuildPlan(
+                availability.Workspace,
+                availability.CodexExecutable!,
+                ["resume", "-C", availability.Workspace, threadId],
+                _windowsTerminalExecutable());
     }
 
     public static CodexLaunchPlan BuildPlan(
@@ -196,6 +277,7 @@ public sealed class CodexInteractiveLauncher
         if (windowsTerminalExecutable is null)
         {
             return new(
+                CodexLaunchProvider.Cli,
                 codexExecutable,
                 codexArguments.ToArray(),
                 workspace,
@@ -204,6 +286,7 @@ public sealed class CodexInteractiveLauncher
         }
 
         return new(
+            CodexLaunchProvider.Cli,
             windowsTerminalExecutable,
             ["-d", workspace, codexExecutable, .. codexArguments],
             workspace,
@@ -211,13 +294,86 @@ public sealed class CodexInteractiveLauncher
             codexExecutable);
     }
 
-    private static CodexLaunchPlan Start(CodexLaunchPlan plan)
+    private CodexLaunchAvailability CheckWorkspaceAndProvider(string? workspace)
+    {
+        if (string.IsNullOrWhiteSpace(workspace))
+        {
+            return new(
+                false,
+                CodexLaunchProblem.WorkspaceMissing,
+                "",
+                CodexLaunchProvider.None,
+                null);
+        }
+
+        string fullWorkspace;
+        try
+        {
+            fullWorkspace = Path.GetFullPath(workspace);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return new(
+                false,
+                CodexLaunchProblem.WorkspaceNotFound,
+                workspace,
+                CodexLaunchProvider.None,
+                null);
+        }
+
+        if (!Directory.Exists(fullWorkspace))
+        {
+            return new(
+                false,
+                CodexLaunchProblem.WorkspaceNotFound,
+                fullWorkspace,
+                CodexLaunchProvider.None,
+                null);
+        }
+
+        if (_desktopAppAvailable())
+        {
+            return new(
+                true,
+                CodexLaunchProblem.None,
+                fullWorkspace,
+                CodexLaunchProvider.DesktopApp,
+                null);
+        }
+
+        var codexExecutable = _cliExecutable();
+        return codexExecutable is null
+            ? new(
+                false,
+                CodexLaunchProblem.CodexUnavailable,
+                fullWorkspace,
+                CodexLaunchProvider.None,
+                null)
+            : new(
+                true,
+                CodexLaunchProblem.None,
+                fullWorkspace,
+                CodexLaunchProvider.Cli,
+                codexExecutable);
+    }
+
+    private static CodexLaunchPlan DesktopPlan(string uri, string workspace) =>
+        new(
+            CodexLaunchProvider.DesktopApp,
+            uri,
+            [],
+            workspace,
+            CodexTerminalKind.None,
+            null);
+
+    private static void Start(CodexLaunchPlan plan)
     {
         var startInfo = new ProcessStartInfo
         {
             FileName = plan.Executable,
             WorkingDirectory = plan.WorkingDirectory,
-            UseShellExecute = plan.TerminalKind == CodexTerminalKind.DirectConsole,
+            UseShellExecute = plan.Provider == CodexLaunchProvider.DesktopApp
+                || plan.TerminalKind == CodexTerminalKind.DirectConsole,
             CreateNoWindow = false
         };
         foreach (var argument in plan.Arguments)
@@ -228,8 +384,7 @@ public sealed class CodexInteractiveLauncher
         try
         {
             _ = Process.Start(startInfo)
-                ?? throw new InvalidOperationException("The terminal process did not start.");
-            return plan;
+                ?? throw new InvalidOperationException("The Codex process did not start.");
         }
         catch (Exception ex) when (
             ex is InvalidOperationException
@@ -239,14 +394,13 @@ public sealed class CodexInteractiveLauncher
         {
             throw new CodexLaunchException(
                 CodexLaunchProblem.None,
-                $"Failed to start the Codex terminal: {ex.Message}",
+                $"Failed to start Codex: {ex.Message}",
                 ex);
         }
     }
 
-    private CodexLaunchAvailability RequireAvailability(string workspace)
+    private static CodexLaunchAvailability RequireAvailability(CodexLaunchAvailability availability)
     {
-        var availability = CheckAvailability(workspace);
         if (availability.CanLaunch)
         {
             return availability;
@@ -254,12 +408,30 @@ public sealed class CodexInteractiveLauncher
 
         var message = availability.Problem switch
         {
-            CodexLaunchProblem.CliNotFound =>
-                "Codex CLI was not found. Install Codex CLI or set THREADSHELF_CODEX_CLI to its executable path.",
+            CodexLaunchProblem.CodexUnavailable =>
+                "Neither the Codex desktop app nor Codex CLI is available.",
             CodexLaunchProblem.WorkspaceMissing => "This task has no Codex workspace.",
+            CodexLaunchProblem.ThreadIdMissing => "The thread ID is required.",
             _ => $"The Codex workspace directory does not exist: {availability.Workspace}"
         };
         throw new CodexLaunchException(availability.Problem, message, detail: availability.Workspace);
+    }
+
+    private static string NormalizeWorkspaceForDetail(string? workspace)
+    {
+        if (string.IsNullOrWhiteSpace(workspace))
+        {
+            return "";
+        }
+
+        try
+        {
+            return Path.GetFullPath(workspace);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return workspace;
+        }
     }
 
     private static string? ResolveWindowsTerminal() =>
