@@ -67,4 +67,23 @@
         <RuntimeHostConfigurationOption Include="Reactor.DevtoolsSupport" Value="true" Trim="true" />
     </ItemGroup>
 
+    <!--
+        Windows App SDK does not copy an unpackaged app's generated PRI/XBF files to
+        PublishDir (WindowsAppSDK#6394). Reactor's application resource dictionary lives
+        there, so a retail publish otherwise fails on named styles such as
+        BodyLargeTextBlockStyle even though Debug builds work.
+    -->
+    <Target Name="_CopyWinUIResourcesForPublish"
+            AfterTargets="Publish"
+            Condition="'$(AppxPackage)' != 'true'">
+        <ItemGroup>
+            <_ThreadShelfWinUIResources Include="$(OutputPath)**\*.xbf" />
+            <_ThreadShelfWinUIResources Include="$(OutputPath)$(AssemblyName).pri"
+                                        Condition="Exists('$(OutputPath)$(AssemblyName).pri')" />
+        </ItemGroup>
+        <Copy SourceFiles="@(_ThreadShelfWinUIResources)"
+              DestinationFiles="@(_ThreadShelfWinUIResources->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+              SkipUnchangedFiles="true" />
+    </Target>
+
 </Project>
