@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace ThreadShelf;
 
@@ -53,7 +54,7 @@ public sealed class CodexAppServerClient : IDisposable
         client.Initialize();
         client.SendRequest(
             archived ? "thread/archive" : "thread/unarchive",
-            new Dictionary<string, object?> { ["threadId"] = threadId },
+            new JsonObject { ["threadId"] = threadId },
             DefaultTimeoutMs);
     }
 
@@ -63,7 +64,7 @@ public sealed class CodexAppServerClient : IDisposable
         client.Initialize();
         client.SendRequest(
             "thread/name/set",
-            new Dictionary<string, object?>
+            new JsonObject
             {
                 ["threadId"] = threadId,
                 ["name"] = name
@@ -113,28 +114,26 @@ public sealed class CodexAppServerClient : IDisposable
     {
         var result = SendRequest(
             "initialize",
-            new
+            new JsonObject
             {
-                clientInfo = new
+                ["clientInfo"] = new JsonObject
                 {
-                    name = "threadshelf",
-                    title = "ThreadShelf",
-                    version = "0.1.0"
+                    ["name"] = "threadshelf",
+                    ["title"] = "ThreadShelf",
+                    ["version"] = "0.1.0"
                 },
-                capabilities = new
+                ["capabilities"] = new JsonObject
                 {
-                    experimentalApi = true,
-                    optOutNotificationMethods = new[]
-                    {
-                        "thread/started",
-                        "thread/statusChanged",
-                        "thread/nameUpdated"
-                    }
+                    ["experimentalApi"] = true,
+                    ["optOutNotificationMethods"] = new JsonArray(
+                        JsonValue.Create("thread/started"),
+                        JsonValue.Create("thread/statusChanged"),
+                        JsonValue.Create("thread/nameUpdated"))
                 }
             },
             DefaultTimeoutMs);
 
-        WriteMessage(new { method = "initialized" });
+        WriteMessage(new JsonObject { ["method"] = "initialized" });
         return GetString(result, "codexHome");
     }
 
@@ -145,7 +144,7 @@ public sealed class CodexAppServerClient : IDisposable
 
         do
         {
-            var parameters = new Dictionary<string, object?>
+            var parameters = new JsonObject
             {
                 ["archived"] = isArchived,
                 ["limit"] = PageSize,
@@ -178,16 +177,21 @@ public sealed class CodexAppServerClient : IDisposable
         return threads;
     }
 
-    private JsonElement SendRequest(string method, object? parameters, int timeoutMs)
+    private JsonElement SendRequest(string method, JsonObject? parameters, int timeoutMs)
     {
         var id = _nextRequestId++;
-        WriteMessage(new { id, method, @params = parameters ?? new { } });
+        WriteMessage(new JsonObject
+        {
+            ["id"] = id,
+            ["method"] = method,
+            ["params"] = parameters ?? new JsonObject()
+        });
         return ReadResponse(id, timeoutMs);
     }
 
-    private void WriteMessage(object message)
+    private void WriteMessage(JsonObject message)
     {
-        var line = JsonSerializer.Serialize(message, JsonOptions);
+        var line = message.ToJsonString(JsonOptions);
         _process.StandardInput.WriteLine(line);
         _process.StandardInput.Flush();
     }

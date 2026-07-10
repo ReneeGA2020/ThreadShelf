@@ -16,7 +16,8 @@ ThreadShelf does not take over or rewrite Codex session files. Folders, tags, no
 - Manage global colored tags with descriptions; tag renames migrate task references.
 - Edit notes, favorites, and Codex thread titles; archive or unarchive from the task card.
 - Assign a ThreadShelf-only project alias or atomically rename a folder within the current project.
-- Start a new interactive Codex task from a project or resume an existing session from its card.
+- Open the real directory from the workspace link in the details pane.
+- Start a new interactive Codex task from a project or resume an existing session from its card; desktop is preferred with automatic CLI fallback.
 - Use Simplified Chinese or English: follow the system by default, or persist a manual choice.
 - Use CLI and MCP automation to organize tasks safely from scripts and AI assistants.
 
@@ -24,7 +25,7 @@ ThreadShelf does not take over or rewrite Codex session files. Folders, tags, no
 
 - Windows 10 version 1809 (build 17763) or newer.
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) when building from source.
-- Optional: an installed, executable Codex CLI. The Codex desktop app and Codex CLI are separate installation surfaces; installing only the desktop app does not guarantee that `codex.exe` exists.
+- Optional: the Codex desktop app or an installed, executable Codex CLI. Interactive Resume/New task needs at least one; archive, unarchive, and title rename still require the CLI `app-server`.
 
 The app uses a self-contained Windows App SDK build, so a separate Windows App Runtime installation is not required.
 
@@ -45,6 +46,18 @@ You can also run the built executable directly:
 
 On ARM64 devices, replace `x64` with `ARM64`.
 
+### Publish win-x64 NativeAOT
+
+The repository includes a directly usable Release NativeAOT profile:
+
+```powershell
+dotnet publish ThreadShelf.App\ThreadShelf.App.csproj -p:PublishProfile=WinX64NativeAot
+```
+
+The complete output is under `ThreadShelf.App\bin\publish\win-x64\`. This is a self-contained, unpackaged x64 folder publish; distribute the whole folder as an archive rather than copying only `ThreadShelf.App.exe`. The profile preserves English/Chinese globalization. `_CopyWinUIResourcesForPublish` copies the required unpackaged WinUI `ThreadShelf.App.pri`, plus any project-generated `.xbf` files, into the publish directory.
+
+Only a `win-x64` profile is provided today. ARM64 can be built from source but does not yet have a Release publish profile. Release/AOT excludes Reactor devtools. The upstream Reactor package may currently emit an aggregate `IL2104`; ThreadShelf itself emits no IL2026/IL3050 warnings, and the published executable passes the UI smoke test below.
+
 ## First launch
 
 1. Start ThreadShelf. It tries `codex app-server` first and automatically switches to read-only local JSONL import when the provider cannot start.
@@ -63,11 +76,11 @@ On ARM64 devices, replace `x64` with `ARM64`.
 
 ### Open, create, and resume Codex tasks
 
-- Open uses a `codex://threads/<id>` deep link to show the task in Codex.
-- Right-click an ordinary project and choose New task to open a visible terminal in its real workspace, equivalent to `codex -C <workspace>`.
-- Resume opens a visible terminal with structured arguments equivalent to `codex resume -C <workspace> <session-id>`.
+- Workspace is a link in the details pane; it opens the real directory in Windows File Explorer. A missing or nonexistent path disables the link and explains why.
+- The card and details pane expose one Resume action. When Codex desktop is detected it uses `codex://threads/<id>`; otherwise it runs `codex resume -C <workspace> <session-id>` with structured arguments in a visible terminal.
+- Right-clicking an ordinary project and choosing New task uses the same strategy: `codex://threads/new?path=<workspace>` for desktop, or `codex -C <workspace>` only when CLI is the available provider.
 - A project display alias is never used as a file-system path.
-- Windows Terminal is preferred when available; otherwise ThreadShelf starts Codex directly in a visible console. Missing CLI or invalid workspace entries are disabled with a reason.
+- Entries are disabled with a localized reason when neither desktop nor CLI is available or workspace/session data is invalid. CLI fallback prefers Windows Terminal and otherwise starts Codex directly in a visible console.
 - The optional hover `+` was evaluated as a pointer experiment. Keeping the row hit target fixed and the context menu as the baseline was more stable, so the hover button is not currently shown.
 
 ### Manage tags
@@ -95,7 +108,7 @@ Back up the `threadshelf` directory to preserve ThreadShelf-owned data. The side
 | Folders, tags, notes, favorites, project aliases | Yes (ThreadShelf sidecar write) | Yes (ThreadShelf sidecar write) |
 | Reveal a session file | Yes | Yes, when the file exists |
 | Archive, unarchive, rename a thread title | Yes (native Codex action) | No; controls are disabled |
-| Start/resume an interactive CLI session | Available when the CLI executable and workspace are valid | Independent of app-server capability |
+| Start/resume an interactive task | Codex desktop preferred; otherwise available when CLI and workspace are valid | Independent of app-server provider |
 
 ThreadShelf resolves the CLI in this order: a valid `THREADSHELF_CODEX_CLI`, the common Windows installation location, then `codex` on `PATH`. The override must point to an existing executable.
 
@@ -127,9 +140,9 @@ See the [AI/CLI/MCP guide](docs/ai-interface.md) for tools, parameters, permissi
 
 ## Troubleshooting
 
-### Codex CLI cannot be found
+### A Codex task cannot be resumed or created
 
-Confirm that `codex --version` works, or point `THREADSHELF_CODEX_CLI` to a real `codex.exe`. If only the Microsoft Store/desktop app is installed, local fallback can still browse tasks, but native actions are disabled.
+Confirm that Codex desktop registered the `codex:` protocol, or confirm that `codex --version` works and point `THREADSHELF_CODEX_CLI` to a real `codex.exe`. When neither is available, ThreadShelf can still browse tasks and edit sidecar metadata; archive/title operations that require `app-server` are disabled independently.
 
 ### No tasks appear
 
@@ -160,6 +173,8 @@ The code is organized by responsibility: desktop entry/composition lives in `Thr
 ```powershell
 dotnet test tests\ThreadShelf.Tests\ThreadShelf.Tests.csproj
 dotnet build ThreadShelf.App\ThreadShelf.App.csproj -p:Platform=x64
+dotnet publish ThreadShelf.App\ThreadShelf.App.csproj -p:PublishProfile=WinX64NativeAot
+powershell -ExecutionPolicy Bypass -File .\scripts\Test-ThreadShelfUi.ps1
 powershell -ExecutionPolicy Bypass -File .\.codex\skills\thread-shelf-reactor\scripts\Test-ThreadShelfMcp.ps1
 ```
 

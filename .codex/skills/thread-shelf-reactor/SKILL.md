@@ -83,7 +83,8 @@ Treat `codex app-server` as optional.
 
 - Honor `THREADSHELF_CODEX_CLI` only when it points to an existing executable.
 - Keep desktop-app installation and CLI availability separate. The common Windows CLI path is `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`.
-- Keep interactive CLI launch capability separate from app-server native actions. Pass `-C`, workspace, and session IDs through `ProcessStartInfo.ArgumentList`; never concatenate a shell command.
+- Keep interactive launch capability separate from app-server native actions. Validate the workspace and Resume session ID, prefer a registered Codex desktop handler, and fall back to CLI only when desktop is unavailable. Both card/details Resume and project New task must consume the same launcher availability/plan.
+- Build desktop plans with `codex://threads/<escaped-id>` and `codex://threads/new?path=<escaped-absolute-workspace>`. Pass CLI `-C`, workspace, and session IDs through `ProcessStartInfo.ArgumentList`; never concatenate a shell command.
 - Preserve fallback reads from `CODEX_HOME`, `session_index.jsonl`, `sessions`, and `archived_sessions` when app-server fails.
 - Write folders, tags, notes, favorites, and project aliases only to `~/.codex/threadshelf/threadshelf.json`.
 - Store UI language preference separately in `~/.codex/threadshelf/preferences.json`.
@@ -115,6 +116,15 @@ Run unit tests and build x64:
 dotnet test tests\ThreadShelf.Tests\ThreadShelf.Tests.csproj
 dotnet build ThreadShelf.App\ThreadShelf.App.csproj -p:Platform=x64
 ```
+
+Publish and smoke-test the Release win-x64 NativeAOT profile:
+
+```powershell
+dotnet publish ThreadShelf.App\ThreadShelf.App.csproj -p:PublishProfile=WinX64NativeAot
+powershell -ExecutionPolicy Bypass -File .\scripts\Test-ThreadShelfUi.ps1
+```
+
+The predictable output is `ThreadShelf.App\bin\publish\win-x64\`. Keep `WindowsPackageType=None`, self-contained Windows App SDK, `PublishAot=true`, and the `_CopyWinUIResourcesForPublish` `.pri`/`.xbf` workaround. Verify `ThreadShelf.App.exe` and `ThreadShelf.App.pri` before launch; do not ship the executable without the rest of the publish directory.
 
 For UI selection, drag/drop, tags, context menus, localization, or save timing, run `winapp ui` against a temporary `CODEX_HOME` or the repository demo fixture. Never point E2E at real Codex data unless explicitly requested.
 

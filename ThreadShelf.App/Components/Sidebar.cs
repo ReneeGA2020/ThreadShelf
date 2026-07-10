@@ -343,7 +343,7 @@ internal sealed partial class ThreadShelfController
         Action<ProjectSummary> startNewTask,
         CodexInteractiveLauncher interactiveLauncher)
     {
-        var availability = interactiveLauncher.CheckAvailability(project.Workspace);
+        var availability = interactiveLauncher.CheckNewTaskAvailability(project.Workspace);
         return ProjectFilterButton(
             project.Key,
             T("CountLabel", project.Name, project.Count),

@@ -74,19 +74,6 @@ internal sealed partial class ThreadShelfController
                 .Flex(basis: 360, shrink: 0);
         }
 
-        void OpenInCodex()
-        {
-            try
-            {
-                ThreadShelfSystemActions.OpenThreadInCodex(thread.Id);
-                setStatus(T("OpenedCodexLink"));
-            }
-            catch (Exception ex)
-            {
-                setStatus(T("OpenFailed", ex.Message));
-            }
-        }
-
         void RevealJsonl()
         {
             try
@@ -184,7 +171,7 @@ internal sealed partial class ThreadShelfController
                             .Flex(shrink: 0)),
                     MetadataLine(T("Updated"), thread.UpdatedLocal),
                     MetadataLine(T("ThreadId"), thread.Id),
-                    MetadataLine(T("Workspace"), EmptyText(thread.Workspace)),
+                    WorkspaceMetadataLine(thread.Workspace, setStatus),
                     MetadataLine(T("Model"), EmptyText(thread.Model)),
                     MetadataLine(T("State"), thread.IsArchived ? T("Archived") : T("Unarchived")),
                     Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 4, 0, 4),
@@ -227,25 +214,15 @@ internal sealed partial class ThreadShelfController
                         .AutomationName(ResumeAutomationName(interactiveLauncher, thread))
                         .AutomationId("ResumeThreadButton")
                         .ToolTip(ResumeToolTip(interactiveLauncher, thread))
-                        .IsEnabled(interactiveLauncher.CheckAvailability(thread.Workspace).CanLaunch)
+                        .IsEnabled(interactiveLauncher.CheckResumeAvailability(thread.Workspace, thread.Id).CanLaunch)
                         .HAlign(HorizontalAlignment.Stretch)
                         .Flex(shrink: 0),
-                    FlexRow(
-                        Button(T("Open"), OpenInCodex)
-                            .AutomationName(T("Open"))
-                            .AutomationId("OpenInCodexButton")
-                            .SubtleButton()
-                            .Flex(grow: 1, basis: 0),
-                        Button(T("Reveal"), RevealJsonl)
-                            .AutomationName(T("Reveal"))
-                            .AutomationId("RevealFileButton")
-                            .SubtleButton()
-                            .Flex(grow: 1, basis: 0))
-                    with
-                    {
-                        ColumnGap = 8,
-                        AlignItems = FlexAlign.Center
-                    })
+                    Button(T("Reveal"), RevealJsonl)
+                        .AutomationName(T("Reveal"))
+                        .AutomationId("RevealFileButton")
+                        .SubtleButton()
+                        .HAlign(HorizontalAlignment.Stretch)
+                        .Flex(shrink: 0))
                 with
                     {
                         RowGap = 10
@@ -365,7 +342,7 @@ internal sealed partial class ThreadShelfController
         Action<CodexThread> resumeThread,
         CodexInteractiveLauncher interactiveLauncher)
     {
-        var availability = interactiveLauncher.CheckAvailability(thread.Workspace);
+        var availability = interactiveLauncher.CheckResumeAvailability(thread.Workspace, thread.Id);
         return Button($"▶  {T("Resume")}", () =>
                 {
                     selectThread(thread);
