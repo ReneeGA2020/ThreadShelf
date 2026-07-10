@@ -112,6 +112,11 @@ internal sealed partial class ThreadShelfController
         return $"{description}; {T("ProviderUnavailableWarning", detail)}";
     }
 
+    private static string DescribeLoadFailure(Exception exception) =>
+        exception is ThreadShelfValidationException { Code: "local_jsonl_read_failed" }
+            ? T("LocalJsonlLoadFailed", exception.InnerException?.Message ?? exception.Message)
+            : T("LoadFailed", exception.Message);
+
     private static string T(string key, params object?[] args) => UiText.Get(key, args);
 
     private static string[] LanguageOptions() =>

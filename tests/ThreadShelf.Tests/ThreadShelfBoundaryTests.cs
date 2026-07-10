@@ -44,6 +44,59 @@ public sealed class ThreadShelfBoundaryTests : IDisposable
     }
 
     [Fact]
+    public void LocalSourceReadsJsonlWhileCodexKeepsFilesOpenForWriting()
+    {
+        CreateLocalFixture();
+        var indexPath = Path.Combine(_codexHome, "session_index.jsonl");
+        var sessionPath = Path.Combine(
+            _codexHome,
+            "sessions",
+            "2026",
+            "07",
+            $"{ThreadId}.jsonl");
+        using var indexWriter = new FileStream(
+            indexPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var sessionWriter = new FileStream(
+            sessionPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.ReadWrite | FileShare.Delete);
+
+        var source = new LocalJsonlThreadSource(_codexHome).Load();
+
+        var thread = Assert.Single(source.Threads);
+        Assert.Equal(ThreadId, thread.Id);
+        Assert.Equal(@"E:\Boundary", thread.Workspace);
+    }
+
+    [Fact]
+    public void LocalSourceReportsRetryableErrorWhenJsonlIsExclusivelyLocked()
+    {
+        CreateLocalFixture();
+        var sessionPath = Path.Combine(
+            _codexHome,
+            "sessions",
+            "2026",
+            "07",
+            $"{ThreadId}.jsonl");
+        using var exclusiveWriter = new FileStream(
+            sessionPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+
+        var exception = Assert.Throws<ThreadShelfValidationException>(
+            () => new LocalJsonlThreadSource(_codexHome).Load());
+
+        Assert.Equal("local_jsonl_read_failed", exception.Code);
+        Assert.True(exception.Retryable);
+        Assert.IsType<IOException>(exception.InnerException);
+    }
+
+    [Fact]
     public void FacadeUsesProviderCodexHomeCapabilitiesAndNativeActions()
     {
         var providerHome = Path.Combine(_codexHome, "provider-home");

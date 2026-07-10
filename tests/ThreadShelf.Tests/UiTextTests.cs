@@ -58,4 +58,18 @@ public sealed class UiTextTests
         Assert.Equal("1,234 shown", english);
         Assert.Equal("显示 1,234 个", chinese);
     }
+
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("zh-CN")]
+    public void LocalJsonlFailurePromptRecommendsCodexCli(string cultureName)
+    {
+        var message = UiText.Get(
+            "LocalJsonlLoadFailed",
+            CultureInfo.GetCultureInfo(cultureName),
+            "file is in use");
+
+        Assert.Contains("Codex CLI", message, StringComparison.Ordinal);
+        Assert.Contains("app-server", message, StringComparison.Ordinal);
+    }
 }

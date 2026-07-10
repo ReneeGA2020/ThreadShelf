@@ -65,6 +65,7 @@ internal sealed partial class ThreadShelfController : Component
         var (renameDraft, setRenameDraft) = UseState<RenameDraft?>(null);
         var (pendingArchiveId, setPendingArchiveId) = UseState("");
         var (status, setStatus) = UseState("");
+        var (loadError, setLoadError) = UseState("");
         var archiveOperationGate = UseMemo(() => new ArchiveOperationGate());
         var renameValueBuffer = UseMemo(() => new RenameValueBuffer());
         var snapshotVersion = snapshot?.LoadedAt.UtcTicks ?? 0L;
@@ -89,11 +90,17 @@ internal sealed partial class ThreadShelfController : Component
             {
                 var loaded = threadService.Load();
                 setSnapshot(loaded);
+                setLoadError("");
                 setStatus(DescribeLoad(loaded));
             }
             catch (Exception ex)
             {
-                setStatus(T("LoadFailed", ex.Message));
+                var message = DescribeLoadFailure(ex);
+                setLoadError(message);
+                if (snapshot is not null)
+                {
+                    setStatus(message);
+                }
             }
         }
 
@@ -626,14 +633,16 @@ internal sealed partial class ThreadShelfController : Component
 
         var titleBar = TitleBar("ThreadShelf")
             .Subtitle(snapshot is null
-                ? T("LoadingCodexThreads")
+                ? loadError.Length == 0
+                    ? T("LoadingCodexThreads")
+                    : T("LoadFailedTitle")
                 : T("IndexedThreads", threads.Count, DataSourceLabel(snapshot)))
             .Flex(shrink: 0);
 
         Element body;
         if (snapshot is null)
         {
-            body = RenderLoading(status);
+            body = RenderLoading(loadError, Reload);
         }
         else
         {

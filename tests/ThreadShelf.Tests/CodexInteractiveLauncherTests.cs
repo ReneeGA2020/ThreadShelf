@@ -9,6 +9,7 @@ public sealed class ProcessEnvironmentCollection;
 public sealed class CodexInteractiveLauncherTests : IDisposable
 {
     private readonly string? _originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+    private readonly string? _originalCodexCli = Environment.GetEnvironmentVariable("THREADSHELF_CODEX_CLI");
     private readonly string? _originalLog = Environment.GetEnvironmentVariable("THREADSHELF_FAKE_LAUNCH_LOG");
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
@@ -109,6 +110,55 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
     }
 
     [Fact]
+    public void AppServerUsesComSpecForNpmBatchShimWithStructuredArguments()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const string shim = @"C:\Users\Test User\AppData\Roaming\npm\codex.cmd";
+        var startInfo = CodexAppServerClient.CreateStartInfo(shim);
+
+        Assert.EndsWith("cmd.exe", startInfo.FileName, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(["/d", "/s", "/c", "call", shim, "app-server"], startInfo.ArgumentList);
+        Assert.False(startInfo.UseShellExecute);
+        Assert.True(startInfo.RedirectStandardInput);
+        Assert.True(startInfo.RedirectStandardOutput);
+        Assert.True(startInfo.RedirectStandardError);
+    }
+
+    [Fact]
+    public void AppServerStartsNativeCliDirectly()
+    {
+        const string executable = @"C:\Program Files\OpenAI\Codex\codex.exe";
+        var startInfo = CodexAppServerClient.CreateStartInfo(executable);
+
+        Assert.Equal(executable, startInfo.FileName);
+        Assert.Equal(["app-server"], startInfo.ArgumentList);
+    }
+
+    [Fact]
+    public void NpmBatchShimStartsAppServerEndToEnd()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(_root);
+        var shim = Path.Combine(_root, "codex.cmd");
+        File.WriteAllText(shim, $"@echo off{Environment.NewLine}\"{FakeExecutable()}\" %*{Environment.NewLine}");
+        Environment.SetEnvironmentVariable("CODEX_HOME", _root);
+        Environment.SetEnvironmentVariable("THREADSHELF_CODEX_CLI", shim);
+
+        var index = CodexAppServerClient.LoadThreadIndex();
+
+        Assert.Equal(_root, index.CodexHome);
+        Assert.Equal(4, index.Threads.Count);
+    }
+
+    [Fact]
     public void NeitherDesktopNorCliIsUnavailable()
     {
         var workspace = CreateWorkspace("no provider");
@@ -205,6 +255,7 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("CODEX_HOME", _originalCodexHome);
+        Environment.SetEnvironmentVariable("THREADSHELF_CODEX_CLI", _originalCodexCli);
         Environment.SetEnvironmentVariable("THREADSHELF_FAKE_LAUNCH_LOG", _originalLog);
         if (Directory.Exists(_root))
         {

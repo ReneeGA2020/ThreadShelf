@@ -46,6 +46,8 @@ command = "E:\\ThreadShelf\\ThreadShelf.Mcp\\bin\\Debug\\net10.0\\ThreadShelf.Mc
 
 Set `CODEX_HOME` in the MCP process environment when it should use a non-default Codex home. For controlled fallback testing, also set `THREADSHELF_CODEX_CLI=C:\Windows\System32\where.exe`.
 
+Codex desktop and Codex CLI are separate capabilities. A desktop-only installation uses local JSONL fallback. For the `app-server` provider, install the CLI from the [official Codex CLI documentation](https://learn.chatgpt.com/docs/codex/cli), verify `codex --version`, and restart the ThreadShelf host. The official npm package can be installed with `npm install -g @openai/codex@latest`; Windows `.cmd` and `.bat` shims are supported.
+
 ## Verify discovery with `tools/list`
 
 After configuration, ask the MCP host to refresh tools. For a raw stdio check:
@@ -188,6 +190,7 @@ Handle these stable codes explicitly:
 - `thread_not_found`, `tag_not_found`, `tag_conflict`, `invalid_argument`: re-read targets/definitions and correct arguments.
 - `native_action_unsupported`: remain in read/sidecar mode; do not emulate the native operation.
 - `app_server_unavailable`: report the native failure; a later retry may work.
+- `local_jsonl_read_failed`: the fallback files are inaccessible or temporarily locked; retry later or install Codex CLI and use `app-server`.
 - `sidecar_read_failed`, `sidecar_write_failed`, `permission_denied`: stop writes and report the path/permission problem.
 
 ## CLI equivalent

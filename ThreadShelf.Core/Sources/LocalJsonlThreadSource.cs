@@ -15,6 +15,23 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
 
     public ThreadSourceSnapshot Load()
     {
+        try
+        {
+            return LoadCore();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new ThreadShelfValidationException(
+                "local_jsonl_read_failed",
+                $"Local Codex JSONL files are unavailable: {ex.Message}",
+                new { codexHome = CodexHome },
+                retryable: true,
+                innerException: ex);
+        }
+    }
+
+    private ThreadSourceSnapshot LoadCore()
+    {
         var index = LoadSessionIndex();
         var files = FindSessionFiles();
         var threads = new List<CodexThread>(Math.Max(index.Count, files.Count));
@@ -77,7 +94,7 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
             return entries;
         }
 
-        foreach (var line in File.ReadLines(SessionIndexPath))
+        foreach (var line in ReadSharedLines(SessionIndexPath))
         {
             if (string.IsNullOrWhiteSpace(line))
             {
@@ -162,7 +179,7 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
         var facts = SessionFacts.Empty;
         var lineCount = 0;
 
-        foreach (var line in File.ReadLines(path))
+        foreach (var line in ReadSharedLines(path))
         {
             if (++lineCount > 80 || string.IsNullOrWhiteSpace(line))
             {
@@ -206,6 +223,23 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
         }
 
         return facts;
+    }
+
+    private static IEnumerable<string> ReadSharedLines(string path)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4096,
+            FileOptions.SequentialScan);
+        using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
+
+        while (reader.ReadLine() is { } line)
+        {
+            yield return line;
+        }
     }
 
     private static string ExtractId(string value)

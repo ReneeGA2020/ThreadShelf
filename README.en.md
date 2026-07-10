@@ -25,7 +25,8 @@ ThreadShelf does not take over or rewrite Codex session files. Folders, tags, no
 
 - Windows 10 version 1809 (build 17763) or newer.
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) when building from source.
-- Optional: the Codex desktop app or an installed, executable Codex CLI. Interactive Resume/New task needs at least one; archive, unarchive, and title rename still require the CLI `app-server`.
+- The Codex desktop app or an installed, executable Codex CLI. Interactive Resume/New task needs at least one.
+- Installing Codex CLI as well is recommended. With desktop only, ThreadShelf imports local JSONL read-only; the CLI `app-server` avoids direct reads of active session files and enables archive, unarchive, and title rename.
 
 The app uses a self-contained Windows App SDK build, so a separate Windows App Runtime installation is not required.
 
@@ -46,6 +47,17 @@ You can also run the built executable directly:
 
 On ARM64 devices, replace `x64` with `ARM64`.
 
+### Install Codex CLI (recommended)
+
+Codex desktop and Codex CLI are separate installation and discovery surfaces. Even when desktop works, install the CLI by following the [official Codex CLI documentation](https://learn.chatgpt.com/docs/codex/cli). If Node.js is installed, run:
+
+```powershell
+npm install -g @openai/codex@latest
+codex --version
+```
+
+Restart ThreadShelf after installation. It will prefer `codex app-server`. If the CLI is still not found, set `THREADSHELF_CODEX_CLI` to `codex.exe`, `codex.cmd`, or `codex.bat`.
+
 ### Publish win-x64 NativeAOT
 
 The repository includes a directly usable Release NativeAOT profile:
@@ -60,7 +72,7 @@ Only a `win-x64` profile is provided today. ARM64 can be built from source but d
 
 ## First launch
 
-1. Start ThreadShelf. It tries `codex app-server` first and automatically switches to read-only local JSONL import when the provider cannot start.
+1. Start ThreadShelf. It tries `codex app-server` first and automatically switches to read-only local JSONL import when the provider cannot start. Installing Codex desktop alone does not imply that the CLI is available.
 2. Choose System default, English, or Simplified Chinese in the upper-left selector. A manual choice is saved in a separate preference file.
 3. Choose a project and folder on the left, a task in the center, and edit its folder, tags, notes, or favorite state on the right.
 4. Use the status button in the task card to archive or unarchive. When app-server is unavailable, the button is disabled and explains why.
@@ -112,6 +124,8 @@ Back up the `threadshelf` directory to preserve ThreadShelf-owned data. The side
 
 ThreadShelf resolves the CLI in this order: a valid `THREADSHELF_CODEX_CLI`, the common Windows installation location, then `codex` on `PATH`. The override must point to an existing executable.
 
+Local fallback opens JSONL in shared read-only mode and does not block Codex desktop from writing. If an active session file is still held exclusively for a moment, ThreadShelf shows a retryable error page; try again shortly, or install the CLI to use `app-server`.
+
 ```powershell
 $env:THREADSHELF_CODEX_CLI = "$env:LOCALAPPDATA\Programs\OpenAI\Codex\bin\codex.exe"
 dotnet run --project ThreadShelf.App\ThreadShelf.App.csproj -p:Platform=x64
@@ -147,6 +161,10 @@ Confirm that Codex desktop registered the `codex:` protocol, or confirm that `co
 ### No tasks appear
 
 Check that `CODEX_HOME` points to the intended directory and that `session_index.jsonl`, `sessions`, or `archived_sessions` exists. Clear search, switch to All projects / All threads, and click Refresh.
+
+### A session file is "being used by another process"
+
+This usually occurs when only Codex desktop is installed, ThreadShelf is loading through local JSONL fallback, and desktop is writing the active session. The current version uses shared read-only access; if the file is still held exclusively for a moment, click Try again on the error page. Installing Codex CLI and confirming that `codex --version` works is recommended so ThreadShelf can prefer `app-server`.
 
 ### Archive or rename is unavailable
 

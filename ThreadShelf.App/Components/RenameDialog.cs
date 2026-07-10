@@ -70,13 +70,28 @@ internal sealed partial class ThreadShelfController
         };
     }
 
-    private static BorderElement RenderLoading(string status)
+    private static BorderElement RenderLoading(string error, Action retry)
     {
+        var failed = error.Length > 0;
         return Border(
             FlexColumn(
-                ProgressRing().IsActive(),
-                BodyLarge(T("LoadingThreadIndex")),
-                Caption(status))
+                If(
+                    !failed,
+                    () => ProgressRing().IsActive(),
+                    () => BodyLarge(T("LoadFailedTitle")).Foreground(Theme.SystemAttention)),
+                If(
+                    !failed,
+                    () => BodyLarge(T("LoadingThreadIndex")),
+                    () => Caption(error)
+                        .TextWrapping()
+                        .MaxWidth(820)
+                        .Foreground(Theme.SecondaryText)),
+                If(
+                    failed,
+                    () => Button(T("Retry"), retry)
+                        .AutomationId("RetryLoadButton")
+                        .AutomationName(T("Retry"))
+                        .AccentButton()))
             with
             {
                 RowGap = 12,

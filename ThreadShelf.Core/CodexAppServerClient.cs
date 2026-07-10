@@ -93,21 +93,43 @@ public sealed class CodexAppServerClient : IDisposable
 
     private static CodexAppServerClient Start()
     {
+        var startInfo = CreateStartInfo(CodexCliLocator.ResolveExecutable());
+        var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Failed to start Codex CLI app-server.");
+
+        return new CodexAppServerClient(process);
+    }
+
+    internal static ProcessStartInfo CreateStartInfo(string executable)
+    {
+        var extension = Path.GetExtension(executable);
+        var isBatchFile = OperatingSystem.IsWindows()
+            && (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase));
         var startInfo = new ProcessStartInfo
         {
-            FileName = CodexCliLocator.ResolveExecutable(),
+            FileName = isBatchFile
+                ? Environment.GetEnvironmentVariable("ComSpec")
+                    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe")
+                : executable,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+
+        if (isBatchFile)
+        {
+            startInfo.ArgumentList.Add("/d");
+            startInfo.ArgumentList.Add("/s");
+            startInfo.ArgumentList.Add("/c");
+            startInfo.ArgumentList.Add("call");
+            startInfo.ArgumentList.Add(executable);
+        }
+
         startInfo.ArgumentList.Add("app-server");
-
-        var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("Failed to start Codex CLI app-server.");
-
-        return new CodexAppServerClient(process);
+        return startInfo;
     }
 
     private string Initialize()

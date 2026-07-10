@@ -82,10 +82,11 @@ powershell -ExecutionPolicy Bypass -File .\.codex\skills\thread-shelf-reactor\sc
 Treat `codex app-server` as optional.
 
 - Honor `THREADSHELF_CODEX_CLI` only when it points to an existing executable.
-- Keep desktop-app installation and CLI availability separate. The common Windows CLI path is `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`.
+- Keep desktop-app installation and CLI availability separate. A desktop-only installation must use local JSONL fallback. The common Windows CLI path is `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`; the official npm install is `npm install -g @openai/codex@latest` and may resolve to a `.cmd` or `.bat` shim.
+- Launch `.cmd`/`.bat` app-server shims through `ComSpec` with every token in `ProcessStartInfo.ArgumentList`; keep native executables direct. Never construct one interpolated shell command.
 - Keep interactive launch capability separate from app-server native actions. Validate the workspace and Resume session ID, prefer a registered Codex desktop handler, and fall back to CLI only when desktop is unavailable. Both card/details Resume and project New task must consume the same launcher availability/plan.
 - Build desktop plans with `codex://threads/<escaped-id>` and `codex://threads/new?path=<escaped-absolute-workspace>`. Pass CLI `-C`, workspace, and session IDs through `ProcessStartInfo.ArgumentList`; never concatenate a shell command.
-- Preserve fallback reads from `CODEX_HOME`, `session_index.jsonl`, `sessions`, and `archived_sessions` when app-server fails.
+- Preserve fallback reads from `CODEX_HOME`, `session_index.jsonl`, `sessions`, and `archived_sessions` when app-server fails. Open JSONL with `FileShare.ReadWrite | FileShare.Delete` so Codex desktop can keep writing. Map remaining I/O/access failures to retryable `local_jsonl_read_failed`; the UI must stop the loading spinner, explain the likely active-file lock, offer Retry, and recommend installing Codex CLI for `app-server`.
 - Write folders, tags, notes, favorites, and project aliases only to `~/.codex/threadshelf/threadshelf.json`.
 - Store UI language preference separately in `~/.codex/threadshelf/preferences.json`.
 - Gate archive/unarchive/thread-title rename on app-server support. The current public schema has no project rename; use a clearly labeled ThreadShelf project alias and never move the workspace directory.

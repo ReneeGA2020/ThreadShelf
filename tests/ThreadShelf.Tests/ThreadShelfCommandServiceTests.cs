@@ -50,6 +50,28 @@ public sealed class ThreadShelfCommandServiceTests : IDisposable
     }
 
     [Fact]
+    public void LocalJsonlLockReturnsStableRetryableError()
+    {
+        var sessionPath = Path.Combine(
+            _codexHome,
+            "sessions",
+            "2026",
+            "07",
+            $"{FirstThreadId}.jsonl");
+        using var exclusiveWriter = new FileStream(
+            sessionPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+
+        var result = _service.ListThreads(new ListThreadsRequest { CodexHome = _codexHome });
+
+        Assert.False(result.Ok);
+        Assert.Equal("local_jsonl_read_failed", result.Error?.Code);
+        Assert.True(result.Error?.Retryable);
+    }
+
+    [Fact]
     public void MetadataPatchPersistsInSidecar()
     {
         var update = _service.UpdateThreadMetadata(new UpdateThreadMetadataRequest
