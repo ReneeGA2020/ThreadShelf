@@ -78,7 +78,7 @@ internal sealed partial class ThreadShelfController
         {
             try
             {
-                ThreadShelfRepository.OpenThreadInCodex(thread.Id);
+                ThreadShelfSystemActions.OpenThreadInCodex(thread.Id);
                 setStatus(T("OpenedCodexLink"));
             }
             catch (Exception ex)
@@ -91,7 +91,7 @@ internal sealed partial class ThreadShelfController
         {
             try
             {
-                ThreadShelfRepository.RevealFile(thread.SourcePath);
+                ThreadShelfSystemActions.RevealFile(thread.SourcePath);
                 setStatus(T("OpenedSessionLocation"));
             }
             catch (Exception ex)
