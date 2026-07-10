@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\ThreadShelf.Core\ThreadShelf.Core.csproj" />
+    <ProjectReference Include="..\..\ThreadShelf.Mcp\ThreadShelf.Mcp.csproj" />
     <ProjectReference Include="..\fixtures\ThreadShelf.FakeCodexCli\ThreadShelf.FakeCodexCli.csproj"
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
