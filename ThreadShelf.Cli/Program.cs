@@ -113,6 +113,10 @@ internal static class ThreadShelfCli
                     Folder = parsed.OptionOrDefault("--folder", "")
                 })),
                 json),
+            "batch-update" => Print(
+                RequireYes(parsed, () => service.ApplyOrganization(
+                    ReadOrganizationRequest(parsed, codexHome))),
+                json),
             "tag" => DispatchThreadTag(service, parsed),
             _ => Print(
                 ThreadShelfCommandResult<object>.Failure(
@@ -288,6 +292,32 @@ internal static class ThreadShelfCli
         return query;
     }
 
+    private static ApplyOrganizationRequest ReadOrganizationRequest(
+        ParsedArgs parsed,
+        string? codexHome)
+    {
+        var path = RequiredOption(parsed, "--file");
+        try
+        {
+            var json = path == "-" ? Console.In.ReadToEnd() : File.ReadAllText(path);
+            var request = JsonSerializer.Deserialize<ApplyOrganizationRequest>(json, JsonOptions)
+                ?? throw new CliUsageException("Organization JSON cannot be empty.");
+            return request with { CodexHome = codexHome ?? request.CodexHome };
+        }
+        catch (JsonException ex)
+        {
+            throw new CliUsageException($"Invalid organization JSON: {ex.Message}");
+        }
+        catch (IOException ex)
+        {
+            throw new CliUsageException($"Cannot read organization JSON: {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            throw new CliUsageException($"Cannot read organization JSON: {ex.Message}");
+        }
+    }
+
     private static void PrintUsage()
     {
         Console.WriteLine("""
@@ -304,6 +334,7 @@ internal static class ThreadShelfCli
           threadshelf threads search <query>
           threadshelf threads update <id> [--folder <name>] [--notes <text>] [--favorite true|false] --yes
           threadshelf threads move <id> --folder <name> --yes
+          threadshelf threads batch-update --file <path|-> --yes
           threadshelf threads tag add <id> <tag> --yes
           threadshelf threads tag remove <id> <tag> --yes
           threadshelf tags list
@@ -326,6 +357,7 @@ internal sealed class ParsedArgs
         "--color",
         "--description",
         "--favorite",
+        "--file",
         "--folder",
         "--limit",
         "--name",

@@ -438,6 +438,32 @@ public sealed class ThreadShelfRepository
         SaveSidecar(document);
     }
 
+    public void SaveOrganization(
+        IReadOnlyList<TagDefinition> tags,
+        IReadOnlyDictionary<string, ThreadMetadata> threads)
+    {
+        var document = LoadSidecar();
+
+        foreach (var tag in tags)
+        {
+            var normalized = NormalizeTagDefinition(tag);
+            if (normalized.Name.Length == 0)
+            {
+                throw new InvalidOperationException("Tag name cannot be empty.");
+            }
+
+            document.Tags[normalized.Name] = normalized;
+        }
+
+        var updatedAt = DateTimeOffset.UtcNow;
+        foreach (var (threadId, metadata) in threads)
+        {
+            document.Threads[threadId] = Normalize(metadata) with { UpdatedAt = updatedAt };
+        }
+
+        SaveSidecar(document);
+    }
+
     public void SaveTagDefinition(string editingName, TagDefinition definition)
     {
         var normalized = NormalizeTagDefinition(definition);

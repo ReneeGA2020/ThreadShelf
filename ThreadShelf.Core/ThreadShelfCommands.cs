@@ -134,6 +134,22 @@ public sealed record DeleteTagRequest
     public string Name { get; init; } = "";
 }
 
+public sealed record OrganizationThreadUpdate
+{
+    public string ThreadId { get; init; } = "";
+    public string? Folder { get; init; }
+    public IReadOnlyList<string>? Tags { get; init; }
+}
+
+public sealed record ApplyOrganizationRequest
+{
+    public string? CodexHome { get; init; }
+    public IReadOnlyList<TagDefinition> Tags { get; init; } = [];
+    public IReadOnlyList<OrganizationThreadUpdate> Threads { get; init; } = [];
+}
+
+public sealed record ApplyOrganizationResult(int TagsUpserted, int ThreadsUpdated);
+
 public sealed record NativeThreadRequest
 {
     public string? CodexHome { get; init; }
@@ -434,6 +450,119 @@ public sealed class ThreadShelfCommandService
             repository.DeleteTagDefinition(name);
             var reloaded = repository.Load();
             return Success(GetTagDtos(reloaded), reloaded);
+        });
+
+    public ThreadShelfCommandResult<ApplyOrganizationResult> ApplyOrganization(
+        ApplyOrganizationRequest request) =>
+        WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        {
+            var requestedTags = request.Tags ?? [];
+            var requestedThreads = request.Threads ?? [];
+            if (requestedTags.Count == 0 && requestedThreads.Count == 0)
+            {
+                return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
+                    "invalid_argument",
+                    "At least one tag definition or thread update is required.");
+            }
+
+            var tags = new List<TagDefinition>(requestedTags.Count);
+            var tagNames = new HashSet<string>(
+                snapshot.Tags.Select(tag => tag.Name),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var tag in requestedTags)
+            {
+                if (tag is null)
+                {
+                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
+                        "invalid_argument",
+                        "Tag definitions cannot contain null entries.");
+                }
+
+                var name = ThreadShelfRepository.NormalizeTagName(tag.Name);
+                if (name.Length == 0)
+                {
+                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
+                        "invalid_argument",
+                        "Tag name is required.");
+                }
+
+                if (!ThreadShelfRepository.IsValidTagColor(tag.Color))
+                {
+                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
+                        "invalid_argument",
+                        "Tag color must be #RRGGBB.",
+                        new { name, tag.Color });
+                }
+
+                if (tags.Any(candidate => candidate.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
+                        "invalid_argument",
+                        $"Tag '{name}' appears more than once in the organization request.",
+                        new { name });
+                }
+
+                tags.Add(tag with { Name = name });
+                tagNames.Add(name);
+            }
+
+            var updates = new Dictionary<string, ThreadMetadata>(StringComparer.OrdinalIgnoreCase);
+            foreach (var update in requestedThreads)
+            {
+                if (update is null)
+                {
+                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
+                        "invalid_argument",
+                        "Thread updates cannot contain null entries.");
+                }
+
+                var threadId = (update.ThreadId ?? "").Trim();
+                if (threadId.Length == 0)
+                {
+                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
+                        "invalid_argument",
+                        "Thread id is required for every organization update.");
+                }
+
+                if (updates.ContainsKey(threadId))
+                {
+                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
+                        "invalid_argument",
+                        $"Thread '{threadId}' appears more than once in the organization request.",
+                        new { threadId });
+                }
+
+                var thread = FindThread(snapshot, threadId);
+                if (thread is null)
+                {
+                    return ThreadNotFound<ApplyOrganizationResult>(threadId);
+                }
+
+                var normalizedTags = update.Tags?
+                    .Select(ThreadShelfRepository.NormalizeTagName)
+                    .Where(name => name.Length > 0)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+                var missingTag = normalizedTags?.FirstOrDefault(name => !tagNames.Contains(name));
+                if (missingTag is not null)
+                {
+                    return TagNotFound<ApplyOrganizationResult>(missingTag);
+                }
+
+                updates[thread.Id] = ThreadShelfRepository.MetadataFrom(
+                    new EditDraft(
+                        update.Folder ?? thread.Metadata.Folder,
+                        thread.Metadata.Notes,
+                        thread.Metadata.Favorite),
+                    normalizedTags ?? thread.Metadata.Tags);
+            }
+
+            repository.SaveOrganization(tags, updates);
+            return Success(
+                new ApplyOrganizationResult(tags.Count, updates.Count),
+                snapshot);
         });
 
     public ThreadShelfCommandResult<ThreadDto> ArchiveThread(NativeThreadRequest request) =>

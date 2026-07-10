@@ -138,6 +138,9 @@ internal sealed class ThreadShelfMcpServer
                     ThreadId = GetString(arguments, "threadId"),
                     Tag = GetString(arguments, "tag")
                 }))),
+            "threadshelf_batch_update_threads" => ToolResponse(RequireConfirmed(
+                arguments,
+                () => _service.ApplyOrganization(GetOrganizationRequest(arguments)))),
             "threadshelf_list_tags" => ToolResponse(_service.ListTags(new ListTagsRequest
             {
                 CodexHome = GetNullableString(arguments, "codexHome")
@@ -225,6 +228,16 @@ internal sealed class ThreadShelfMcpServer
 
     private static object[] ToolCatalog()
     {
+        var tagDefinitionSchema = ObjectProp(Props(
+            ("name", StringProp("Tag name.")),
+            ("color", StringProp("Hex color, #RRGGBB.")),
+            ("description", StringProp("Tag description."))), ["name", "color"]);
+        var threadUpdateSchema = ObjectProp(Props(
+            ("threadId", StringProp("Thread id.")),
+            ("folder", StringProp("Folder value. Empty clears the folder.")),
+            ("tags", ArrayProp("Exact global tag names for the thread.", StringProp("Global tag name.")))),
+            ["threadId"]);
+
         return [
         Tool("threadshelf_list_threads", "List Codex threads with optional folder, tag, query, archive, and limit filters.", Props(
             ("codexHome", StringProp("Optional CODEX_HOME path.")),
@@ -262,6 +275,11 @@ internal sealed class ThreadShelfMcpServer
             ("threadId", StringProp("Thread id.")),
             ("tag", StringProp("Tag name.")),
             ("confirmed", BoolProp("Must be true for mutations."))), ["threadId", "tag", "confirmed"]),
+        Tool("threadshelf_batch_update_threads", "Atomically upsert tag definitions and set folders/tags on many threads after validating the complete request.", Props(
+            ("codexHome", StringProp("Optional CODEX_HOME path.")),
+            ("tags", ArrayProp("Global tag definitions to create or update.", tagDefinitionSchema)),
+            ("threads", ArrayProp("Thread metadata updates. Omit folder or tags to preserve that field; an empty value clears it.", threadUpdateSchema)),
+            ("confirmed", BoolProp("Must be true for mutations."))), ["confirmed"]),
         Tool("threadshelf_list_tags", "List global tag definitions and usage counts.", Props(
             ("codexHome", StringProp("Optional CODEX_HOME path.")))),
         Tool("threadshelf_create_tag", "Create a global tag definition.", Props(
@@ -334,6 +352,24 @@ internal sealed class ThreadShelfMcpServer
     private static object IntProp(string description)
     {
         return new { type = "integer", description };
+    }
+
+    private static object ArrayProp(string description, object items)
+    {
+        return new { type = "array", description, items };
+    }
+
+    private static object ObjectProp(Dictionary<string, object> properties, string[] required)
+    {
+        return new { type = "object", properties, required };
+    }
+
+    private static ApplyOrganizationRequest GetOrganizationRequest(JsonElement arguments)
+    {
+        return arguments.ValueKind == JsonValueKind.Object
+            ? JsonSerializer.Deserialize<ApplyOrganizationRequest>(arguments.GetRawText(), JsonOptions)
+                ?? new ApplyOrganizationRequest()
+            : new ApplyOrganizationRequest();
     }
 
     private static JsonElement GetParams(JsonElement root)

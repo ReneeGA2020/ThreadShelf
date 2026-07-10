@@ -154,6 +154,98 @@ public sealed class ThreadShelfCommandServiceTests : IDisposable
     }
 
     [Fact]
+    public void BatchOrganizationUpsertsTagsAndUpdatesThreadsAtomically()
+    {
+        var result = _service.ApplyOrganization(new ApplyOrganizationRequest
+        {
+            CodexHome = _codexHome,
+            Tags =
+            [
+                new TagDefinition
+                {
+                    Name = "bug",
+                    Color = "#D1242F",
+                    Description = "Needs a fix"
+                },
+                new TagDefinition
+                {
+                    Name = "docs",
+                    Color = "#8250DF",
+                    Description = "Documentation work"
+                }
+            ],
+            Threads =
+            [
+                new OrganizationThreadUpdate
+                {
+                    ThreadId = FirstThreadId,
+                    Folder = "Delivery",
+                    Tags = ["bug"]
+                },
+                new OrganizationThreadUpdate
+                {
+                    ThreadId = SecondThreadId,
+                    Folder = "Knowledge",
+                    Tags = ["docs"]
+                }
+            ]
+        });
+
+        AssertSuccess(result);
+        Assert.Equal(2, result.Data!.TagsUpserted);
+        Assert.Equal(2, result.Data.ThreadsUpdated);
+
+        var threads = _service.ListThreads(new ListThreadsRequest { CodexHome = _codexHome });
+        AssertSuccess(threads);
+        var organizedThreads = threads.Data!;
+        Assert.Equal("Delivery", organizedThreads.Single(thread => thread.Id == FirstThreadId).Metadata.Folder);
+        Assert.Equal(["bug"], organizedThreads.Single(thread => thread.Id == FirstThreadId).Metadata.Tags);
+        Assert.Equal("Knowledge", organizedThreads.Single(thread => thread.Id == SecondThreadId).Metadata.Folder);
+        Assert.Equal(["docs"], organizedThreads.Single(thread => thread.Id == SecondThreadId).Metadata.Tags);
+    }
+
+    [Fact]
+    public void BatchOrganizationValidationFailureDoesNotPartiallyWrite()
+    {
+        var result = _service.ApplyOrganization(new ApplyOrganizationRequest
+        {
+            CodexHome = _codexHome,
+            Tags =
+            [
+                new TagDefinition
+                {
+                    Name = "bug",
+                    Color = "#D1242F"
+                }
+            ],
+            Threads =
+            [
+                new OrganizationThreadUpdate
+                {
+                    ThreadId = FirstThreadId,
+                    Folder = "Should not persist",
+                    Tags = ["missing"]
+                }
+            ]
+        });
+
+        Assert.False(result.Ok);
+        Assert.Equal("tag_not_found", result.Error?.Code);
+
+        var thread = _service.GetThread(new GetThreadRequest
+        {
+            CodexHome = _codexHome,
+            ThreadId = FirstThreadId
+        });
+        AssertSuccess(thread);
+        Assert.Equal("", thread.Data!.Metadata.Folder);
+
+        var tags = _service.ListTags(new ListTagsRequest { CodexHome = _codexHome });
+        AssertSuccess(tags);
+        Assert.DoesNotContain(tags.Data!, tag => tag.Name == "bug");
+    }
+
+    [Fact]
     public void NativeActionReturnsUnsupportedErrorOnFallback()
     {
         var result = _service.ArchiveThread(new NativeThreadRequest

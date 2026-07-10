@@ -63,6 +63,7 @@ Use `threadshelf` as the executable name. Every command accepts
 | `threadshelf threads search <query>` | read | Search title, id, folder, tags, notes, workspace, source, and model. |
 | `threadshelf threads update <id>` | write | Patch ThreadShelf metadata. |
 | `threadshelf threads move <id> --folder <name>` | write | Set or clear the ThreadShelf folder. |
+| `threadshelf threads batch-update --file <path\|->` | write | Atomically upsert tag definitions and set exact folders/tags for many threads. |
 | `threadshelf threads tag add <id> <tag>` | write | Attach a global tag to a thread. |
 | `threadshelf threads tag remove <id> <tag>` | write | Remove a tag from a thread. |
 | `threadshelf tags list` | read | List global tags and usage counts. |
@@ -78,7 +79,24 @@ Example:
 ```powershell
 threadshelf threads list --folder Work --tag bug --limit 50 --json
 threadshelf threads update 018f... --favorite true --notes "Follow up" --json
+threadshelf threads batch-update --file organization.json --yes --json
 threadshelf tags create --name bug --color "#D1242F" --description "Needs a fix" --yes --json
+```
+
+Batch organization input uses this shape. The service validates all ids,
+duplicate entries, tag definitions, colors, and tag references before writing
+the sidecar once. Omitted `folder` or `tags` fields preserve the existing value;
+an empty folder clears it and an empty tag array removes all thread tags.
+
+```json
+{
+  "tags": [
+    { "name": "bug", "color": "#D1242F", "description": "Needs a fix" }
+  ],
+  "threads": [
+    { "threadId": "018f...", "folder": "Delivery", "tags": ["bug"] }
+  ]
+}
 ```
 
 ## MCP Tools
@@ -93,6 +111,7 @@ stable and explicit:
 - `threadshelf_move_thread`
 - `threadshelf_add_thread_tag`
 - `threadshelf_remove_thread_tag`
+- `threadshelf_batch_update_threads`
 - `threadshelf_list_tags`
 - `threadshelf_create_tag`
 - `threadshelf_update_tag`

@@ -36,11 +36,14 @@ dotnet run --project ThreadShelf.App
 ```powershell
 dotnet run --project ThreadShelf.Cli -- threads list --json
 dotnet run --project ThreadShelf.Cli -- threads search "follow up" --json
+dotnet run --project ThreadShelf.Cli -- threads batch-update --file organization.json --yes --json
 dotnet run --project ThreadShelf.Cli -- tags create --name bug --color "#D1242F" --yes --json
 ```
 
 All commands accept `--codex-home <path>` and `--json`. Mutations require
-`--yes`.
+`--yes`. Batch updates validate every thread and tag before atomically writing
+the ThreadShelf sidecar once; use `--file -` to read the JSON request from
+standard input.
 
 ## MCP
 
