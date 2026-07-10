@@ -17,8 +17,8 @@ ReactorApp.Run(_ => ReactorApp.OpenWindow(
         new WindowSpec
         {
             Title = "ThreadShelf",
-            Width = 1180,
-            Height = 760,
+            Width = 1240,
+            Height = 800,
             MinWidth = 980,
             MinHeight = 560
         },
