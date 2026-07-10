@@ -5,6 +5,7 @@ using ThreadShelf;
 
 namespace ThreadShelf.Tests;
 
+[Collection("Process environment")]
 public sealed class ThreadShelfCommandServiceTests : IDisposable
 {
     private const string FirstThreadId = "11111111-1111-1111-1111-111111111111";

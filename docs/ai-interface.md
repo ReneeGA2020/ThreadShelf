@@ -1,126 +1,151 @@
-# AI Interface Design
+# ThreadShelf AI, CLI, and MCP Guide
 
-ThreadShelf exposes an automation surface that is safe by default, scriptable
-from terminals, and easy for AI assistants to discover through MCP. The current
-implementation uses a shared `ThreadShelf.Core` command surface plus thin
-`ThreadShelf.Cli` and `ThreadShelf.Mcp` executables that reuse the same command
-handlers.
+ThreadShelf ships a working automation surface in `ThreadShelf.Core`, `ThreadShelf.Cli`, and `ThreadShelf.Mcp`. Use it to read Codex threads and to change ThreadShelf-owned organization metadata without editing storage files directly.
 
-## Goals
+## Safety model
 
-- Let an assistant list, inspect, search, and filter Codex threads.
-- Let an assistant update ThreadShelf-owned metadata: folder, tags, notes, and
-  favorite state.
-- Let an assistant manage global tag definitions.
-- Let an assistant request native Codex actions only when the Codex CLI
-  app-server supports them.
-- Keep Codex-owned storage read-only except for native app-server operations.
+Treat operations as three distinct permission classes:
 
-## Data Model
+| Class | Examples | Confirmation |
+| --- | --- | --- |
+| Read-only | list, get, search, list tags | none |
+| ThreadShelf sidecar write | folder, notes, favorite, tags, batch organization | `confirmed: true` in MCP or `--yes` in CLI |
+| Native Codex write | archive, unarchive, rename thread title | `confirmed: true`/`--yes`, and app-server support |
 
-Thread objects are read models composed from Codex app-server or local JSONL
-fallback plus ThreadShelf sidecar metadata.
+Deleting a tag is destructive because it removes the definition and every task reference. Confirm the exact tag name before running it.
+
+Never edit `session_index.jsonl`, `sessions`, or `archived_sessions`. Do not edit `threadshelf.json` for normal operations either; use MCP or CLI so validation, atomic writes, and response envelopes stay intact.
+
+## Start and configure the MCP server
+
+Build once, then run the stdio server:
+
+```powershell
+dotnet build ThreadShelf.Mcp\ThreadShelf.Mcp.csproj
+.\ThreadShelf.Mcp\bin\Debug\net10.0\ThreadShelf.Mcp.exe
+```
+
+A typical MCP client entry is:
 
 ```json
 {
-  "id": "uuid",
-  "title": "string",
-  "updatedAt": "2026-07-09T00:00:00Z",
-  "workspace": "string",
-  "model": "string",
-  "sourcePath": "string",
-  "isArchived": false,
-  "metadata": {
-    "folder": "string",
-    "tags": ["string"],
-    "notes": "string",
-    "favorite": false,
-    "updatedAt": "2026-07-09T00:00:00Z"
+  "mcpServers": {
+    "threadshelf": {
+      "command": "E:\\ThreadShelf\\ThreadShelf.Mcp\\bin\\Debug\\net10.0\\ThreadShelf.Mcp.exe"
+    }
   }
 }
 ```
 
-Tag definitions are global ThreadShelf records:
+For a Codex project configuration, use the equivalent stdio entry:
 
-```json
-{
-  "name": "bug",
-  "color": "#D1242F",
-  "description": "Needs a fix"
-}
+```toml
+[mcp_servers.threadshelf]
+command = "E:\\ThreadShelf\\ThreadShelf.Mcp\\bin\\Debug\\net10.0\\ThreadShelf.Mcp.exe"
 ```
 
-## CLI Shape
+Set `CODEX_HOME` in the MCP process environment when it should use a non-default Codex home. For controlled fallback testing, also set `THREADSHELF_CODEX_CLI=C:\Windows\System32\where.exe`.
 
-Use `threadshelf` as the executable name. Every command accepts
-`--codex-home <path>` and `--json`. Commands that mutate state accept
-`--yes` for non-interactive confirmation.
+## Verify discovery with `tools/list`
 
-| Command | Access | Description |
-| --- | --- | --- |
-| `threadshelf threads list` | read | List threads with optional filters. |
-| `threadshelf threads get <id>` | read | Return one thread with metadata. |
-| `threadshelf threads search <query>` | read | Search title, id, folder, tags, notes, workspace, source, and model. |
-| `threadshelf threads update <id>` | write | Patch ThreadShelf metadata. |
-| `threadshelf threads move <id> --folder <name>` | write | Set or clear the ThreadShelf folder. |
-| `threadshelf threads batch-update --file <path\|->` | write | Atomically upsert tag definitions and set exact folders/tags for many threads. |
-| `threadshelf threads tag add <id> <tag>` | write | Attach a global tag to a thread. |
-| `threadshelf threads tag remove <id> <tag>` | write | Remove a tag from a thread. |
-| `threadshelf tags list` | read | List global tags and usage counts. |
-| `threadshelf tags create` | write | Create a global tag. |
-| `threadshelf tags update <name>` | write | Rename or edit a global tag. |
-| `threadshelf tags delete <name>` | destructive | Delete a tag definition and remove thread references. |
-| `threadshelf native archive <id>` | native write | Archive through Codex app-server. |
-| `threadshelf native unarchive <id>` | native write | Unarchive through Codex app-server. |
-| `threadshelf native rename <id> --title <title>` | native write | Rename through Codex app-server. |
-
-Example:
+After configuration, ask the MCP host to refresh tools. For a raw stdio check:
 
 ```powershell
-threadshelf threads list --folder Work --tag bug --limit 50 --json
-threadshelf threads update 018f... --favorite true --notes "Follow up" --json
-threadshelf threads batch-update --file organization.json --yes --json
-threadshelf tags create --name bug --color "#D1242F" --description "Needs a fix" --yes --json
+'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' |
+  .\ThreadShelf.Mcp\bin\Debug\net10.0\ThreadShelf.Mcp.exe
 ```
 
-Batch organization input uses this shape. The service validates all ids,
-duplicate entries, tag definitions, colors, and tag references before writing
-the sidecar once. Omitted `folder` or `tags` fields preserve the existing value;
-an empty folder clears it and an empty tag array removes all thread tags.
+The current catalog contains 15 tools. The response schemas returned by `tools/list` are authoritative; re-run it after changing `ThreadShelf.Mcp/Program.cs`.
+
+## Tool catalog
+
+All tools accept optional `codexHome`. Mutation tools require `confirmed: true`.
+
+| Tool | Required arguments | Optional arguments | Access |
+| --- | --- | --- | --- |
+| `threadshelf_list_threads` | — | `folder`, `tag`, `query`, `archived`, `limit` | read |
+| `threadshelf_get_thread` | `threadId` | — | read |
+| `threadshelf_search_threads` | `query` | `limit` | read |
+| `threadshelf_update_thread_metadata` | `threadId`, `confirmed` | `folder`, `notes`, `favorite` | sidecar write |
+| `threadshelf_move_thread` | `threadId`, `folder`, `confirmed` | — | sidecar write |
+| `threadshelf_add_thread_tag` | `threadId`, `tag`, `confirmed` | — | sidecar write |
+| `threadshelf_remove_thread_tag` | `threadId`, `tag`, `confirmed` | — | sidecar write |
+| `threadshelf_batch_update_threads` | `confirmed` | `tags`, `threads` | atomic sidecar write |
+| `threadshelf_list_tags` | — | — | read |
+| `threadshelf_create_tag` | `name`, `confirmed` | `color`, `description` | sidecar write |
+| `threadshelf_update_tag` | `name`, `confirmed` | `newName`, `color`, `description` | sidecar write |
+| `threadshelf_delete_tag` | `name`, `confirmed` | — | destructive sidecar write |
+| `threadshelf_archive_thread` | `threadId`, `confirmed` | — | native Codex write |
+| `threadshelf_unarchive_thread` | `threadId`, `confirmed` | — | native Codex write |
+| `threadshelf_rename_thread` | `threadId`, `title`, `confirmed` | — | native Codex write |
+
+Folder filter values use stable internal keys: `__all`, `__favorites`, and `__unfiled`, or a literal folder name. An empty folder in a move/update clears the folder. Tag mutations require an existing global tag.
+
+## Recommended agent workflow
+
+Always use read → confirm target → write → read:
+
+1. Call `threadshelf_search_threads` or `threadshelf_list_threads` to identify candidates.
+2. Call `threadshelf_get_thread` with the exact ID and inspect its current folder, tags, and source provider.
+3. Explain the intended mutation and obtain confirmation when the host has not already granted it.
+4. Call one mutation with `confirmed: true`.
+5. Call `threadshelf_get_thread` again and verify the requested fields.
+
+For multiple related changes, prefer `threadshelf_batch_update_threads`; it validates all IDs, tag definitions, colors, duplicate entries, and tag references before writing the sidecar once.
+
+### Example: find → move → tag → verify
+
+Search:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"threadshelf_search_threads","arguments":{"query":"release"}}}
+```
+
+Confirm the returned `threadId` with `threadshelf_get_thread`. List tags and create `ready` only if it does not exist:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"threadshelf_list_tags","arguments":{}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"threadshelf_create_tag","arguments":{"name":"ready","color":"#1F883D","description":"Ready for review","confirmed":true}}}
+```
+
+Move and attach the tag:
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"threadshelf_move_thread","arguments":{"threadId":"<exact-id>","folder":"Delivery","confirmed":true}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"threadshelf_add_thread_tag","arguments":{"threadId":"<exact-id>","tag":"ready","confirmed":true}}}
+```
+
+Verify:
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"threadshelf_get_thread","arguments":{"threadId":"<exact-id>"}}}
+```
+
+Do not create the tag blindly on every run: an existing name returns `tag_conflict`.
+
+### Atomic batch example
 
 ```json
 {
-  "tags": [
-    { "name": "bug", "color": "#D1242F", "description": "Needs a fix" }
-  ],
-  "threads": [
-    { "threadId": "018f...", "folder": "Delivery", "tags": ["bug"] }
-  ]
+  "name": "threadshelf_batch_update_threads",
+  "arguments": {
+    "confirmed": true,
+    "tags": [
+      { "name": "ready", "color": "#1F883D", "description": "Ready for review" }
+    ],
+    "threads": [
+      { "threadId": "<id-1>", "folder": "Delivery", "tags": ["ready"] },
+      { "threadId": "<id-2>", "folder": "References", "tags": [] }
+    ]
+  }
 }
 ```
 
-## MCP Tools
+Omitted `folder` or `tags` preserves that field. An empty folder clears it; an empty tag array removes all tags.
 
-The MCP server should map one tool to one command handler. Tool names should be
-stable and explicit:
+## Responses and provider boundaries
 
-- `threadshelf_list_threads`
-- `threadshelf_get_thread`
-- `threadshelf_search_threads`
-- `threadshelf_update_thread_metadata`
-- `threadshelf_move_thread`
-- `threadshelf_add_thread_tag`
-- `threadshelf_remove_thread_tag`
-- `threadshelf_batch_update_threads`
-- `threadshelf_list_tags`
-- `threadshelf_create_tag`
-- `threadshelf_update_tag`
-- `threadshelf_delete_tag`
-- `threadshelf_archive_thread`
-- `threadshelf_unarchive_thread`
-- `threadshelf_rename_thread`
-
-Each MCP response should return:
+MCP returns a standard MCP text content item whose text is a JSON envelope:
 
 ```json
 {
@@ -135,103 +160,54 @@ Each MCP response should return:
 }
 ```
 
-## Permissions
+Interpret `source.provider` before choosing a native action:
 
-Read-only operations can run without confirmation.
+- `app-server`: native archive/unarchive/thread-title rename may be attempted.
+- `local-files`: browsing and ThreadShelf sidecar writes work, but native actions return `native_action_unsupported`.
 
-ThreadShelf metadata writes should require confirmation in MCP unless the host
-has already granted write permission for the session. CLI users can pass
-`--yes`.
+Warnings explain provider fallback. Never treat local JSONL presence as permission to move files or fabricate an archive state.
 
-Native Codex actions should always be marked separately because they call
-`codex app-server` mutation methods.
-
-Destructive operations require explicit confirmation:
-
-- Delete tag definitions.
-- Remove a tag from all thread references.
-- Future delete-thread operations, if Codex exposes a supported native API.
-
-ThreadShelf should never write folders, tags, notes, or favorite state into
-Codex-owned JSONL files.
-
-## Error Format
-
-Every CLI JSON and MCP error should use a stable envelope:
+Errors use:
 
 ```json
 {
   "ok": false,
   "error": {
-    "code": "tag_not_found",
-    "message": "Tag 'bug' was not found.",
-    "details": {
-      "name": "bug"
-    },
+    "code": "confirmation_required",
+    "message": "Set confirmed to true to allow this mutation.",
     "retryable": false
   }
 }
 ```
 
-Recommended error codes:
+Handle these stable codes explicitly:
 
-- `invalid_argument`
-- `thread_not_found`
-- `tag_not_found`
-- `tag_conflict`
-- `app_server_unavailable`
-- `native_action_unsupported`
-- `sidecar_read_failed`
-- `sidecar_write_failed`
-- `confirmation_required`
-- `permission_denied`
+- `confirmation_required`: ask for or apply valid mutation confirmation.
+- `thread_not_found`, `tag_not_found`, `tag_conflict`, `invalid_argument`: re-read targets/definitions and correct arguments.
+- `native_action_unsupported`: remain in read/sidecar mode; do not emulate the native operation.
+- `app_server_unavailable`: report the native failure; a later retry may work.
+- `sidecar_read_failed`, `sidecar_write_failed`, `permission_denied`: stop writes and report the path/permission problem.
 
-## CLI vs MCP
+## CLI equivalent
 
-CLI is the best first implementation because it is easy to test, script, and
-ship with the desktop project. It also works for humans and CI jobs.
+The CLI uses the same command service and envelopes:
 
-MCP is the best AI-native surface because tools have schemas and hosts can
-apply confirmation policy before writes.
-
-The implementation should put repository operations into a shared library,
-then expose them through both:
-
-```text
-ThreadShelf.Core
-  Repository, models, validation, command handlers
-ThreadShelf.App
-  WinUI Reactor desktop UI
-ThreadShelf.Cli
-  System.CommandLine executable
-ThreadShelf.Mcp
-  MCP server using the same handlers
+```powershell
+dotnet run --project ThreadShelf.Cli -- threads list --json
+dotnet run --project ThreadShelf.Cli -- threads get <id> --json
+dotnet run --project ThreadShelf.Cli -- threads move <id> --folder Delivery --yes --json
+dotnet run --project ThreadShelf.Cli -- threads tag add <id> ready --yes --json
+dotnet run --project ThreadShelf.Cli -- native archive <id> --yes --json
 ```
 
-## Implementation Status
+Run `dotnet run --project ThreadShelf.Cli -- --help` for the complete current command syntax.
 
-The first implementation is present in:
+## Smoke test
 
-- `ThreadShelf.Core`: repository, models, validation, command handlers, and
-  stable JSON result/error envelopes.
-- `ThreadShelf.Cli`: `threadshelf` executable commands with `--json`,
-  `--codex-home`, and `--yes`.
-- `ThreadShelf.Mcp`: stdio JSON-RPC MCP server with the stable tool names above
-  and input schemas.
-- `tests/ThreadShelf.Tests`: temporary `CODEX_HOME` tests covering list/search,
-  metadata patch, tag rename migration, tag delete cleanup, fallback behavior,
-  and unsupported native-action errors.
+Run the skill-bundled smoke test. It creates and deletes a temporary `CODEX_HOME`, verifies `tools/list`, one read, the confirmation gate, tag creation, folder/tag sidecar writes, read-back, and an unsupported native action:
 
-## MVP Plan
+```powershell
+powershell -ExecutionPolicy Bypass -File .\.codex\skills\thread-shelf-reactor\scripts\Test-ThreadShelfMcp.ps1
+```
 
-1. Move current repository/data records into `ThreadShelf.Core`.
-2. Add command handlers that accept typed request records and return typed
-   result envelopes.
-3. Add `ThreadShelf.Cli` with read commands, then metadata write commands.
-4. Add tag management commands, including rename migration and delete cleanup.
-5. Add native app-server commands with unsupported-operation errors when the
-   fallback provider is active.
-6. Add an MCP server that exposes the same handlers with JSON schemas and
-   confirmation metadata.
-7. Add tests with a temporary `CODEX_HOME` covering list, search, metadata
-   patch, tag rename migration, tag delete cleanup, and fallback behavior.
+The test forces local fallback with `where.exe` and never touches the user's real Codex home.

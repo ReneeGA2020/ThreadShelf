@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Controls;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 using ThreadShelf;
 
@@ -31,6 +32,22 @@ internal class App : Component
 
     private sealed record ThreadDragPayload(string ThreadId);
     private sealed record PendingProjectSelection(string Project, string Folder, string TargetThreadId);
+    private enum RenameTargetKind
+    {
+        Project,
+        Folder
+    }
+
+    private sealed record RenameDraft(RenameTargetKind Kind, string Key, string CurrentName, string Value);
+    private sealed class RenameValueBuffer
+    {
+        public string Value { get; set; } = "";
+    }
+    private sealed class ArchiveOperationGate
+    {
+        public bool IsPending { get; set; }
+    }
+
     private sealed record TagEditorDraft(string EditingName, string Name, string Color, string Description)
     {
         public static TagEditorDraft Empty { get; } = new("", "", TagDefinition.DefaultColor, "");
@@ -39,6 +56,11 @@ internal class App : Component
     public override Element Render()
     {
         var repository = UseMemo(() => new ThreadShelfRepository());
+        var interactiveLauncher = UseMemo(() => new CodexInteractiveLauncher());
+        var preferenceStore = UseMemo(() => new AppPreferenceStore(repository.CodexHome));
+        var initialLanguage = UseMemo(preferenceStore.LoadLanguagePreference);
+        var (languagePreference, setLanguagePreference) = UseState(initialLanguage);
+        UiText.ApplyLanguage(languagePreference);
         var (snapshot, setSnapshot) = UseState<ThreadShelfSnapshot?>(null);
         var (selectedProject, setSelectedProject) = UseState(ThreadFilters.AllProjects);
         var (selectedFilter, setSelectedFilter) = UseState(ThreadFilters.All);
@@ -51,7 +73,11 @@ internal class App : Component
         var (activePage, setActivePage) = UseState(ThreadsPage);
         var (pendingDeleteTag, setPendingDeleteTag) = UseState("");
         var (pendingProject, setPendingProject) = UseState<PendingProjectSelection?>(null);
+        var (renameDraft, setRenameDraft) = UseState<RenameDraft?>(null);
+        var (pendingArchiveId, setPendingArchiveId) = UseState("");
         var (status, setStatus) = UseState("");
+        var archiveOperationGate = UseMemo(() => new ArchiveOperationGate());
+        var renameValueBuffer = UseMemo(() => new RenameValueBuffer());
         var snapshotVersion = snapshot?.LoadedAt.UtcTicks ?? 0L;
 
         void setTagEditor(TagEditorDraft next)
@@ -78,7 +104,26 @@ internal class App : Component
             }
             catch (Exception ex)
             {
-                setStatus($"Load failed: {ex.Message}");
+                setStatus(T("LoadFailed", ex.Message));
+            }
+        }
+
+        void SelectLanguage(int index)
+        {
+            var next = LanguagePreferenceForIndex(index);
+            try
+            {
+                preferenceStore.SaveLanguagePreference(next);
+                setLanguagePreference(next);
+                var culture = UiText.ResolveCulture(next);
+                setStatus(UiText.Get(
+                    "LanguageChanged",
+                    culture,
+                    LanguageDisplayName(next, culture)));
+            }
+            catch (Exception ex)
+            {
+                setStatus(T("LanguageSaveFailed", ex.Message));
             }
         }
 
@@ -125,7 +170,13 @@ internal class App : Component
 
         var threads = snapshot?.Threads ?? [];
         var tags = snapshot?.Tags ?? [];
-        var filtered = ThreadFilters.Apply(threads, selectedProject, selectedFilter, query, selectedTag);
+        var filtered = ThreadFilters.Apply(
+            threads,
+            selectedProject,
+            selectedFilter,
+            query,
+            selectedTag,
+            snapshot?.ProjectAliases);
         var selectedThread = filtered.FirstOrDefault(thread =>
                 thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
             ?? (filtered.Count > 0 ? filtered[0] : null);
@@ -209,6 +260,8 @@ internal class App : Component
         {
             var projectThreads = ThreadFilters.FilterByProject(threads, project);
             var folderStillExists = selectedFilter is ThreadFilters.All
+                or ThreadFilters.Active
+                or ThreadFilters.Archived
                 or ThreadFilters.Favorites
                 or ThreadFilters.Unfiled
                 || projectThreads.Any(thread => thread.DisplayFolder.Equals(
@@ -296,7 +349,7 @@ internal class App : Component
             }
             catch (Exception ex)
             {
-                setStatus($"Save failed: {ex.Message}");
+                setStatus(T("SaveFailed", ex.Message));
             }
         }
 
@@ -308,7 +361,7 @@ internal class App : Component
             }
 
             var metadata = ThreadShelfRepository.MetadataFrom(draftToSave, selectedThread.Metadata.Tags);
-            SaveThreadMetadata(selectedThread, metadata, $"Saved metadata for {selectedThread.DisplayTitle}");
+            SaveThreadMetadata(selectedThread, metadata, T("MetadataSaved", ThreadTitle(selectedThread)));
         }
 
         void MoveThreadToFolder(ThreadDragPayload payload, string folder)
@@ -327,8 +380,8 @@ internal class App : Component
 
             var targetFolder = (folder ?? "").Trim();
             var metadata = thread.Metadata with { Folder = targetFolder };
-            var destination = targetFolder.Length == 0 ? "Unfiled" : targetFolder;
-            SaveThreadMetadata(thread, metadata, $"Moved {thread.DisplayTitle} to {destination}");
+            var destination = targetFolder.Length == 0 ? T("Unfiled") : targetFolder;
+            SaveThreadMetadata(thread, metadata, T("MovedThread", ThreadTitle(thread), destination));
         }
 
         void ToggleThreadTag(CodexThread thread, TagDefinition tag)
@@ -353,8 +406,8 @@ internal class App : Component
                 thread,
                 thread.Metadata with { Tags = nextTags },
                 hasTag
-                    ? $"Removed tag {tagName} from {thread.DisplayTitle}"
-                    : $"Added tag {tagName} to {thread.DisplayTitle}");
+                    ? T("RemovedTag", tagName, ThreadTitle(thread))
+                    : T("AddedTag", tagName, ThreadTitle(thread)));
         }
 
         void SaveTagDefinition()
@@ -362,13 +415,13 @@ internal class App : Component
             var name = ThreadShelfRepository.NormalizeTagName(tagEditor.Name);
             if (name.Length == 0)
             {
-                setStatus("Tag save failed: name cannot be empty");
+                setStatus(T("TagSaveNameEmpty"));
                 return;
             }
 
             if (!ThreadShelfRepository.IsValidTagColor(tagEditor.Color))
             {
-                setStatus("Tag save failed: color must be #RRGGBB");
+                setStatus(T("TagColorInvalid"));
                 return;
             }
 
@@ -390,12 +443,12 @@ internal class App : Component
                 setTagEditor(TagEditorDraft.Empty);
                 Reload();
                 setStatus(tagEditor.EditingName.Length == 0
-                    ? $"Added tag {definition.Name}"
-                    : $"Saved tag {definition.Name}");
+                    ? T("AddedTagDefinition", definition.Name)
+                    : T("SavedTag", definition.Name));
             }
             catch (Exception ex)
             {
-                setStatus($"Tag save failed: {ex.Message}");
+                setStatus(T("TagSaveFailed", ex.Message));
             }
         }
 
@@ -404,7 +457,7 @@ internal class App : Component
             var tagName = ThreadShelfRepository.NormalizeTagName(name);
             if (tagName.Length == 0)
             {
-                setStatus("Tag delete failed: name cannot be empty");
+                setStatus(T("TagDeleteNameEmpty"));
                 return;
             }
 
@@ -423,27 +476,47 @@ internal class App : Component
 
                 setPendingDeleteTag("");
                 Reload();
-                setStatus($"Deleted tag {tagName}");
+                setStatus(T("DeletedTag", tagName));
             }
             catch (Exception ex)
             {
-                setStatus($"Tag delete failed: {ex.Message}");
+                setStatus(T("TagDeleteFailed", ex.Message));
             }
         }
 
-        void ToggleArchived(CodexThread thread, bool archived)
+        async void ToggleArchived(CodexThread thread, bool archived)
         {
+            if (archiveOperationGate.IsPending)
+            {
+                return;
+            }
+
+            archiveOperationGate.IsPending = true;
+            setPendingArchiveId(thread.Id);
+            setStatus(archived
+                ? T("Archiving", ThreadTitle(thread))
+                : T("Unarchiving", ThreadTitle(thread)));
+
             try
             {
-                repository.SetArchived(thread.Id, archived);
-                Reload();
+                var loaded = await Task.Run(() =>
+                {
+                    repository.SetArchived(thread.Id, archived);
+                    return repository.Load();
+                });
+                setSnapshot(loaded);
                 setStatus(archived
-                    ? $"Archived {thread.DisplayTitle}"
-                    : $"Unarchived {thread.DisplayTitle}");
+                    ? T("ArchivedThread", ThreadTitle(thread))
+                    : T("UnarchivedThread", ThreadTitle(thread)));
             }
             catch (Exception ex)
             {
-                setStatus($"Archive action failed: {ex.Message}");
+                setStatus(T("ArchiveActionFailed", ex.Message));
+            }
+            finally
+            {
+                archiveOperationGate.IsPending = false;
+                setPendingArchiveId("");
             }
         }
 
@@ -452,7 +525,7 @@ internal class App : Component
             var trimmed = (name ?? "").Trim();
             if (trimmed.Length == 0)
             {
-                setStatus("Rename failed: title cannot be empty");
+                setStatus(T("RenameTitleEmpty"));
                 return;
             }
 
@@ -460,18 +533,109 @@ internal class App : Component
             {
                 repository.SetName(thread.Id, trimmed);
                 Reload();
-                setStatus($"Renamed thread to {trimmed}");
+                setStatus(T("RenamedThread", trimmed));
             }
             catch (Exception ex)
             {
-                setStatus($"Rename failed: {ex.Message}");
+                setStatus(T("RenameFailed", ex.Message));
+            }
+        }
+
+        void ApplyNavigationRename(RenameDraft rename)
+        {
+            if (snapshot is null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (rename.Kind == RenameTargetKind.Project)
+                {
+                    repository.RenameProjectAlias(rename.Key, rename.Value, snapshot.Threads);
+                    Reload();
+                    setStatus(T("ProjectAliasRenamed", rename.CurrentName, rename.Value.Trim()));
+                }
+                else
+                {
+                    repository.RenameFolder(
+                        selectedProject,
+                        rename.Key,
+                        rename.Value,
+                        snapshot.Threads);
+                    if (selectedFilter.Equals(rename.Key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        setSelectedFilter(rename.Value.Trim());
+                    }
+
+                    Reload();
+                    setStatus(T("FolderRenamed", rename.CurrentName, rename.Value.Trim()));
+                }
+            }
+            catch (ThreadShelfValidationException ex)
+            {
+                setStatus(RenameValidationMessage(ex));
+            }
+            catch (Exception ex)
+            {
+                setStatus(T("RenameFailed", ex.Message));
+            }
+            finally
+            {
+                setRenameDraft(null);
+            }
+        }
+
+        void BeginProjectRename(ProjectSummary project)
+        {
+            renameValueBuffer.Value = project.Name;
+            setRenameDraft(new RenameDraft(
+                RenameTargetKind.Project,
+                project.Key,
+                project.Name,
+                project.Name));
+        }
+
+        void BeginFolderRename(FolderSummary folder)
+        {
+            renameValueBuffer.Value = folder.Name;
+            setRenameDraft(new RenameDraft(
+                RenameTargetKind.Folder,
+                folder.Name,
+                folder.Name,
+                folder.Name));
+        }
+
+        void StartNewTask(ProjectSummary project)
+        {
+            try
+            {
+                interactiveLauncher.LaunchNewTask(project.Workspace);
+                setStatus(T("NewTaskStarted", project.Name));
+            }
+            catch (Exception ex)
+            {
+                setStatus(T("CodexLaunchFailed", CodexLaunchError(ex)));
+            }
+        }
+
+        void ResumeThread(CodexThread thread)
+        {
+            try
+            {
+                interactiveLauncher.ResumeThread(thread.Workspace, thread.Id);
+                setStatus(T("ResumeStarted", ThreadTitle(thread)));
+            }
+            catch (Exception ex)
+            {
+                setStatus(T("CodexLaunchFailed", CodexLaunchError(ex)));
             }
         }
 
         var titleBar = TitleBar("ThreadShelf")
             .Subtitle(snapshot is null
-                ? "Loading Codex threads"
-                : $"{threads.Count:N0} indexed threads via {snapshot.DataSource}")
+                ? T("LoadingCodexThreads")
+                : T("IndexedThreads", threads.Count, DataSourceLabel(snapshot)))
             .Flex(shrink: 0);
 
         Element body;
@@ -484,6 +648,7 @@ internal class App : Component
             var sidebar = RenderSidebar(
                 threads,
                 tags,
+                snapshot.ProjectAliases,
                 activePage,
                 ShowThreads,
                 ShowTagManager,
@@ -494,7 +659,13 @@ internal class App : Component
                 selectedTag,
                 SelectTagFilter,
                 MoveThreadToFolder,
-                snapshot.SidecarPath);
+                BeginProjectRename,
+                BeginFolderRename,
+                StartNewTask,
+                interactiveLauncher,
+                snapshot.SidecarPath,
+                languagePreference,
+                SelectLanguage);
 
             body = activePage.Equals(TagsPage, StringComparison.OrdinalIgnoreCase)
                 ? FlexRow(
@@ -521,10 +692,16 @@ internal class App : Component
                     RenderThreadList(
                         filtered,
                         tags,
+                        snapshot.ProjectAliases,
                         selectedThread?.Id ?? "",
                         query,
                         setQuery,
                         SelectThread,
+                        ToggleArchived,
+                        snapshot.SupportsNativeActions,
+                        pendingArchiveId,
+                        ResumeThread,
+                        interactiveLauncher,
                         Reload,
                         status),
                     RenderDetails(
@@ -540,6 +717,9 @@ internal class App : Component
                         ToggleArchived,
                         RenameThread,
                         snapshot.SupportsNativeActions,
+                        pendingArchiveId,
+                        ResumeThread,
+                        interactiveLauncher,
                         setStatus))
                     with
                 {
@@ -552,8 +732,60 @@ internal class App : Component
                 titleBar,
                 Border(body)
                     .Padding(20)
-                    .Flex(grow: 1, basis: 0))
+                    .Flex(grow: 1, basis: 0),
+                RenderRenameDialog(renameDraft, setRenameDraft, renameValueBuffer, ApplyNavigationRename))
             .Backdrop(BackdropKind.Mica);
+    }
+
+    private static ContentDialogElement RenderRenameDialog(
+        RenameDraft? draft,
+        Action<RenameDraft?> setDraft,
+        RenameValueBuffer valueBuffer,
+        Action<RenameDraft> submit)
+    {
+        var isProject = draft?.Kind == RenameTargetKind.Project;
+        return ContentDialog(
+                isProject ? T("RenameProject") : T("RenameFolder"),
+                FlexColumn(
+                    If(
+                        isProject,
+                        () => Caption(T("ProjectAliasNotice")).TextWrapping().Foreground(Theme.SecondaryText),
+                        () => Caption(T("FolderRenameNotice")).TextWrapping().Foreground(Theme.SecondaryText)),
+                    TextBox(
+                            draft?.Value ?? "",
+                            value =>
+                            {
+                                if (draft is not null)
+                                {
+                                    valueBuffer.Value = value;
+                                    setDraft(draft with { Value = value });
+                                }
+                            },
+                            placeholderText: T("NewName"),
+                            header: T("NewName"))
+                        .AutomationId("RenameInput"))
+                with
+                {
+                    RowGap = 10
+                },
+                T("Rename")) with
+        {
+            IsOpen = draft is not null,
+            SecondaryButtonText = T("Cancel"),
+            DefaultButton = ContentDialogButton.Primary,
+            IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(draft?.Value),
+            OnClosed = result =>
+            {
+                if (result == ContentDialogResult.Primary && draft is not null)
+                {
+                    submit(draft with { Value = valueBuffer.Value });
+                }
+                else
+                {
+                    setDraft(null);
+                }
+            }
+        };
     }
 
     private static BorderElement RenderLoading(string status)
@@ -561,7 +793,7 @@ internal class App : Component
         return Border(
             FlexColumn(
                 ProgressRing().IsActive(),
-                BodyLarge("Loading Codex thread index"),
+                BodyLarge(T("LoadingThreadIndex")),
                 Caption(status))
             with
             {
@@ -575,6 +807,7 @@ internal class App : Component
     private static BorderElement RenderSidebar(
         IReadOnlyList<CodexThread> threads,
         IReadOnlyList<TagDefinition> tags,
+        IReadOnlyDictionary<string, string> projectAliases,
         string activePage,
         Action showThreads,
         Action showTagManager,
@@ -585,38 +818,59 @@ internal class App : Component
         string selectedTag,
         Action<string> selectTag,
         Action<ThreadDragPayload, string> moveThreadToFolder,
-        string sidecarPath)
+        Action<ProjectSummary> renameProject,
+        Action<FolderSummary> renameFolder,
+        Action<ProjectSummary> startNewTask,
+        CodexInteractiveLauncher interactiveLauncher,
+        string sidecarPath,
+        string languagePreference,
+        Action<int> selectLanguage)
     {
-        var projects = ThreadFilters.BuildProjectSummaries(threads);
+        var projects = ThreadFilters.BuildProjectSummaries(threads, projectAliases);
         var projectThreads = ThreadFilters.FilterByProject(threads, selectedProject);
         var folders = ThreadFilters.BuildFolderSummaries(projectThreads);
         var folderThreads = ThreadFilters.Apply(projectThreads, selectedFilter, "", "");
         var tagSummaries = ThreadFilters.BuildTagSummaries(folderThreads, tags);
         var favoriteCount = projectThreads.Count(thread => thread.Metadata.Favorite);
         var unfiledCount = projectThreads.Count(thread => string.IsNullOrWhiteSpace(thread.Metadata.Folder));
+        var activeCount = projectThreads.Count(thread => !thread.IsArchived);
+        var archivedCount = projectThreads.Count(thread => thread.IsArchived);
         var noProjectCount = threads.Count(thread =>
             ThreadFilters.NormalizeProjectKey(thread.Workspace).Length == 0);
 
         var projectButtons = projects
-            .Select(project => ProjectFilterButton(project, selectedProject, selectProject))
+            .Select(project => ProjectFilterButton(
+                project,
+                selectedProject,
+                selectProject,
+                renameProject,
+                startNewTask,
+                interactiveLauncher))
             .ToArray();
         Element[] noProjectButtons = noProjectCount > 0
             ? [ProjectFilterButton(
                 ThreadFilters.NoProject,
-                $"No project ({noProjectCount:N0})",
-                "Threads without a workspace",
+                T("CountLabel", T("NoProject"), noProjectCount),
+                T("ThreadsWithoutWorkspace"),
                 selectedProject,
-                selectProject)]
+                selectProject)
+                .WithContextFlyout(MenuItems([
+                    MenuItem(T("NewTask")) with
+                    {
+                        IsEnabled = false,
+                        Description = T("WorkspaceMissingLaunch")
+                    }
+                ]))]
             : [];
 
         var folderButtons = folders
-            .Select(folder => FilterButton(
-                folder.Name,
-                $"{folder.Name} ({folder.Count:N0})",
+            .Select(folder => FolderFilterButton(
+                folder,
+                selectedProject,
                 selectedFilter,
                 selectFilter,
-                payload => moveThreadToFolder(payload, folder.Name),
-                $"Move to {folder.Name}"))
+                moveThreadToFolder,
+                renameFolder))
             .ToArray();
 
         var tagButtons = tagSummaries
@@ -625,55 +879,80 @@ internal class App : Component
 
         return Border(
                 FlexColumn(
-                    BodyStrong("View").Flex(shrink: 0),
-                    PageButton(ThreadsPage, "Threads", activePage, showThreads)
+                    BodyStrong(T("View")).Flex(shrink: 0),
+                    ComboBox(LanguageOptions(), LanguagePreferenceIndex(languagePreference), selectLanguage)
+                        .AutomationName(T("Language"))
+                        .AutomationId("LanguageSelector")
+                        .WithKey($"language-{UiText.NormalizeLanguagePreference(languagePreference)}")
+                        .HAlign(HorizontalAlignment.Stretch)
+                        .Flex(shrink: 0),
+                    PageButton(ThreadsPage, T("Threads"), activePage, showThreads)
                         .AutomationId("View_Threads"),
-                    PageButton(TagsPage, "Tag manager", activePage, showTagManager)
+                    PageButton(TagsPage, T("TagManager"), activePage, showTagManager)
                         .AutomationId("View_TagManager"),
                     Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 8, 0, 4),
                     ScrollViewer(
                         FlexColumn(
-                            [BodyStrong("Projects"),
+                            [BodyStrong(T("Projects")),
                             ProjectFilterButton(
                                 ThreadFilters.AllProjects,
-                                $"All projects ({threads.Count:N0})",
-                                "All Codex workspaces",
+                                T("CountLabel", T("AllProjects"), threads.Count),
+                                T("AllCodexWorkspaces"),
                                 selectedProject,
-                                selectProject),
+                                selectProject)
+                                .WithContextFlyout(MenuItems([
+                                    MenuItem(T("NewTask")) with
+                                    {
+                                        IsEnabled = false,
+                                        Description = T("AllProjectsCannotLaunch")
+                                    }
+                                ])),
                             .. projectButtons,
                             .. noProjectButtons,
                             Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 10, 0, 6),
-                            BodyStrong("Folders"),
+                            BodyStrong(T("Folders")),
                             FilterButton(
                                 ThreadFilters.All,
-                                $"All threads ({projectThreads.Count:N0})",
+                                T("CountLabel", T("AllThreads"), projectThreads.Count),
                                 selectedFilter,
                                 selectFilter)
                                 .AutomationId("Filter_All"),
                             FilterButton(
+                                ThreadFilters.Active,
+                                T("CountLabel", T("Unarchived"), activeCount),
+                                selectedFilter,
+                                selectFilter)
+                                .AutomationId("Filter_Active"),
+                            FilterButton(
+                                ThreadFilters.Archived,
+                                T("CountLabel", T("Archived"), archivedCount),
+                                selectedFilter,
+                                selectFilter)
+                                .AutomationId("Filter_Archived"),
+                            FilterButton(
                                 ThreadFilters.Favorites,
-                                $"Favorites ({favoriteCount:N0})",
+                                T("CountLabel", T("Favorites"), favoriteCount),
                                 selectedFilter,
                                 selectFilter)
                                 .AutomationId("Filter_Favorites"),
                             FilterButton(
                                 ThreadFilters.Unfiled,
-                                $"Unfiled ({unfiledCount:N0})",
+                                T("CountLabel", T("Unfiled"), unfiledCount),
                                 selectedFilter,
                                 selectFilter,
                                 payload => moveThreadToFolder(payload, ""),
-                                "Move to Unfiled")
+                                T("MoveToFolder", T("Unfiled")))
                                 .AutomationId("Filter_Unfiled"),
                             .. folderButtons,
                             Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 10, 0, 6),
-                            BodyStrong("Tags"),
+                            BodyStrong(T("Tags")),
                             TagFilterButton(null, folderThreads.Count, selectedTag, selectTag),
                             .. tagButtons]) with
                         {
                             RowGap = 6
                         })
                     .Flex(grow: 1, basis: 0),
-                    Caption($"Sidecar: {sidecarPath}")
+                    Caption(T("Sidecar", sidecarPath))
                         .TextWrapping()
                         .Foreground(Theme.SecondaryText)
                         .Flex(shrink: 0))
@@ -813,13 +1092,51 @@ internal class App : Component
     private static ButtonElement ProjectFilterButton(
         ProjectSummary project,
         string selectedProject,
-        Action<string> selectProject) =>
-        ProjectFilterButton(
+        Action<string> selectProject,
+        Action<ProjectSummary> renameProject,
+        Action<ProjectSummary> startNewTask,
+        CodexInteractiveLauncher interactiveLauncher)
+    {
+        var availability = interactiveLauncher.CheckAvailability(project.Workspace);
+        return ProjectFilterButton(
             project.Key,
-            $"{project.Name} ({project.Count:N0})",
+            T("CountLabel", project.Name, project.Count),
             project.Workspace,
             selectedProject,
-            selectProject);
+            selectProject)
+        .WithContextFlyout(MenuItems([
+            MenuItem(T("NewTask"), () => startNewTask(project)) with
+            {
+                IsEnabled = availability.CanLaunch,
+                Description = availability.CanLaunch
+                    ? T("NewTaskToolTip", project.Name)
+                    : CodexLaunchProblemText(availability.Problem, availability.Workspace)
+            },
+            MenuItem(T("Rename"), () => renameProject(project))
+        ]));
+    }
+
+    private static ButtonElement FolderFilterButton(
+        FolderSummary folder,
+        string selectedProject,
+        string selectedFilter,
+        Action<string> selectFilter,
+        Action<ThreadDragPayload, string> moveThreadToFolder,
+        Action<FolderSummary> renameFolder)
+    {
+        var button = FilterButton(
+            folder.Name,
+            T("CountLabel", folder.Name, folder.Count),
+            selectedFilter,
+            selectFilter,
+            payload => moveThreadToFolder(payload, folder.Name),
+            T("MoveToFolder", folder.Name));
+        return selectedProject.Equals(ThreadFilters.AllProjects, StringComparison.OrdinalIgnoreCase)
+            ? button
+            : button.WithContextFlyout(MenuItems([
+                MenuItem(T("Rename"), () => renameFolder(folder))
+            ]));
+    }
 
     private static ButtonElement ProjectFilterButton(
         string value,
@@ -837,7 +1154,7 @@ internal class App : Component
         var selected = value.Equals(selectedProject, StringComparison.OrdinalIgnoreCase);
 
         return FilterButton(value, label, selectedProject, selectProject)
-            .AutomationName($"Project {label}")
+            .AutomationName(T("ProjectAutomation", label))
             .AutomationId($"Project_{automationToken}")
             .ToolTip(tooltip)
             .WithKey($"project-{automationToken}-{(selected ? "selected" : "normal")}");
@@ -852,8 +1169,8 @@ internal class App : Component
         if (summary is null)
         {
             var selected = string.IsNullOrWhiteSpace(selectedTag);
-            return Button($"All tags ({totalCount:N0})", () => selectTag(""))
-                .AutomationName("All tags")
+            return Button(T("CountLabel", T("AllTags"), totalCount), () => selectTag(""))
+                .AutomationName(T("AllTags"))
                 .AutomationId("TagFilter_All")
                 .HAlign(HorizontalAlignment.Stretch)
                 .Set(button => button.HorizontalContentAlignment = HorizontalAlignment.Stretch)
@@ -908,8 +1225,8 @@ internal class App : Component
         var selected = tag.Name.Equals(selectedTag, StringComparison.OrdinalIgnoreCase);
         var foreground = ForegroundFor(tag.Color);
 
-        return Button($"{tag.Name} ({summary.Count:N0})", () => selectTag(tag.Name))
-            .AutomationName($"Tag {tag.Name}")
+        return Button(T("CountLabel", tag.Name, summary.Count), () => selectTag(tag.Name))
+            .AutomationName(T("Tag", tag.Name))
             .AutomationId($"TagFilter_{AutomationToken(tag.Name)}")
             .HAlign(HorizontalAlignment.Stretch)
             .ToolTip(string.IsNullOrWhiteSpace(tag.Description) ? tag.Name : tag.Description)
@@ -934,10 +1251,16 @@ internal class App : Component
     private static BorderElement RenderThreadList(
         IReadOnlyList<CodexThread> threads,
         IReadOnlyList<TagDefinition> tags,
+        IReadOnlyDictionary<string, string> projectAliases,
         string selectedId,
         string query,
         Action<string> setQuery,
         Action<CodexThread> selectThread,
+        Action<CodexThread, bool> setArchived,
+        bool supportsNativeActions,
+        string pendingArchiveId,
+        Action<CodexThread> resumeThread,
+        CodexInteractiveLauncher interactiveLauncher,
         Action reload,
         string status)
     {
@@ -959,7 +1282,13 @@ internal class App : Component
                     thread,
                     thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase),
                     tagLookup,
-                    selectThread))
+                    projectAliases,
+                    selectThread,
+                    setArchived,
+                    supportsNativeActions,
+                    pendingArchiveId,
+                    resumeThread,
+                    interactiveLauncher))
             with
         {
             SelectedIndex = selectedIndex
@@ -976,11 +1305,12 @@ internal class App : Component
         return Border(
                 FlexColumn(
                     FlexRow(
-                        TextBox(query, setQuery, placeholderText: "Search title, project, folder, tag, note, id")
-                            .AutomationName("Thread search")
+                        TextBox(query, setQuery, placeholderText: T("SearchPlaceholder"))
+                            .AutomationName(T("ThreadSearch"))
                             .AutomationId("ThreadSearchBox")
                             .Flex(grow: 1, basis: 0),
-                        Button("Refresh", reload)
+                        Button(T("Refresh"), reload)
+                            .AutomationName(T("Refresh"))
                             .AutomationId("RefreshButton")
                             .SubtleButton()
                             .Flex(shrink: 0))
@@ -990,7 +1320,7 @@ internal class App : Component
                         AlignItems = FlexAlign.Center
                     },
                     FlexRow(
-                        BodyStrong($"{threads.Count:N0} shown"),
+                        BodyStrong(T("ShownThreads", threads.Count)),
                         Caption(status).Foreground(Theme.SecondaryText).Flex(grow: 1, basis: 0))
                     with
                     {
@@ -1001,8 +1331,8 @@ internal class App : Component
                         threads.Count == 0,
                         () => Border(
                                 FlexColumn(
-                                    BodyLarge("No matching threads"),
-                                    Caption("Clear the search or select another project or folder.").Foreground(Theme.SecondaryText))
+                                    BodyLarge(T("NoMatchingThreads")),
+                                    Caption(T("ClearSearchHint")).Foreground(Theme.SecondaryText))
                                 with
                                 {
                                     RowGap = 8,
@@ -1028,12 +1358,18 @@ internal class App : Component
         CodexThread thread,
         bool selected,
         Dictionary<string, TagDefinition> tagLookup,
-        Action<CodexThread> selectThread)
+        IReadOnlyDictionary<string, string> projectAliases,
+        Action<CodexThread> selectThread,
+        Action<CodexThread, bool> setArchived,
+        bool supportsNativeActions,
+        string pendingArchiveId,
+        Action<CodexThread> resumeThread,
+        CodexInteractiveLauncher interactiveLauncher)
     {
-        var status = thread.IsArchived ? "Archived" : "Active";
+        var status = thread.IsArchived ? T("Archived") : T("Unarchived");
         var source = string.IsNullOrWhiteSpace(thread.Source) ? thread.Originator : thread.Source;
         var location = string.IsNullOrWhiteSpace(thread.Workspace) ? source : thread.Workspace;
-        var projectName = ThreadFilters.ProjectNameForWorkspace(thread.Workspace);
+        var projectName = ProjectDisplayName(thread.Workspace, projectAliases);
         var visibleTags = thread.Metadata.Tags.Take(4).ToArray();
         var hiddenTagCount = Math.Max(0, thread.Metadata.Tags.Count - visibleTags.Length);
 
@@ -1041,22 +1377,27 @@ internal class App : Component
                 FlexColumn(
                     FlexRow(
                         Caption("::")
-                            .AutomationName($"Drag {thread.DisplayTitle} to folder")
+                            .AutomationName(T("DragThreadToFolder", ThreadTitle(thread)))
                             .AutomationId($"ThreadDragHandle_{AutomationToken(thread.Id)}")
-                            .ToolTip("Drag to folder")
+                            .ToolTip(T("DragToFolder"))
                             .Foreground(Theme.SecondaryText)
                             .Width(18)
                             .HAlign(HorizontalAlignment.Center)
                             .OnDragStart(() => new ThreadDragPayload(thread.Id), DragOperations.Move)
                             .Flex(shrink: 0),
-                        BodyStrong(thread.DisplayTitle)
+                        BodyStrong(ThreadTitle(thread))
                             .AutomationId($"ThreadTitle_{AutomationToken(thread.Id)}")
                             .OnPointerPressed((_, _) => selectThread(thread))
                             .OnTapped((_, _) => selectThread(thread))
                             .TextTrimming(TextTrimming.CharacterEllipsis)
                             .MaxLines(1)
                             .Flex(grow: 1, basis: 0),
-                        Pill(status, thread.IsArchived ? Theme.SystemNeutralBackground : Theme.SystemSuccessBackground)
+                        ArchiveStatusButton(
+                                thread,
+                                status,
+                                setArchived,
+                                supportsNativeActions,
+                                pendingArchiveId)
                             .Flex(shrink: 0))
                     with
                     {
@@ -1066,10 +1407,10 @@ internal class App : Component
                     FlexRow(
                         Caption(thread.UpdatedLocal).Foreground(Theme.SecondaryText),
                         Caption(projectName)
-                            .ToolTip(string.IsNullOrWhiteSpace(thread.Workspace) ? "No Codex workspace" : thread.Workspace)
+                            .ToolTip(string.IsNullOrWhiteSpace(thread.Workspace) ? T("NoCodexWorkspace") : thread.Workspace)
                             .Foreground(Theme.SecondaryText),
-                        Caption(thread.DisplayFolder).Foreground(Theme.SecondaryText),
-                        If(thread.Metadata.Favorite, () => Caption("Favorite").Foreground(Theme.SystemAttention), () => Empty()))
+                        Caption(FolderDisplayName(thread)).Foreground(Theme.SecondaryText),
+                        If(thread.Metadata.Favorite, () => Caption(T("Favorite")).Foreground(Theme.SystemAttention), () => Empty()))
                     with
                     {
                         ColumnGap = 10,
@@ -1090,13 +1431,19 @@ internal class App : Component
                             Wrap = FlexWrap.Wrap
                         },
                         () => Empty()),
-                    If(
-                        !string.IsNullOrWhiteSpace(location),
-                        () => Caption(location)
+                    FlexRow(
+                        Caption(string.IsNullOrWhiteSpace(location) ? T("NoCodexWorkspace") : location)
                             .TextTrimming(TextTrimming.CharacterEllipsis)
                             .MaxLines(1)
-                            .Foreground(Theme.TertiaryText),
-                        () => Empty()))
+                            .Foreground(Theme.TertiaryText)
+                            .Flex(grow: 1, basis: 0),
+                        CardResumeButton(thread, selectThread, resumeThread, interactiveLauncher)
+                            .Flex(shrink: 0))
+                    with
+                    {
+                        ColumnGap = 8,
+                        AlignItems = FlexAlign.Center
+                    })
                 with
                 {
                     RowGap = 5
@@ -1107,8 +1454,6 @@ internal class App : Component
             .WithBorder(selected ? Theme.Accent : Theme.CardStroke, selected ? 2 : 1)
             .Margin(0, 0, 0, 6)
             .AutomationId($"ThreadRow_{AutomationToken(thread.Id)}")
-            .OnPointerPressed((_, _) => selectThread(thread))
-            .OnTapped((_, _) => selectThread(thread))
             .WithKey(thread.Id);
     }
 
@@ -1125,14 +1470,17 @@ internal class App : Component
         Action<CodexThread, bool> setArchived,
         Action<CodexThread, string> renameThread,
         bool supportsNativeActions,
+        string pendingArchiveId,
+        Action<CodexThread> resumeThread,
+        CodexInteractiveLauncher interactiveLauncher,
         Action<string> setStatus)
     {
         if (thread is null || draft is null)
         {
             return Border(
                     FlexColumn(
-                        BodyLarge("No thread selected"),
-                        Caption("Select a thread from the list.").Foreground(Theme.SecondaryText))
+                        BodyLarge(T("NoThreadSelected")),
+                        Caption(T("SelectThreadHint")).Foreground(Theme.SecondaryText))
                     with
                     {
                         RowGap = 8,
@@ -1151,11 +1499,11 @@ internal class App : Component
             try
             {
                 ThreadShelfRepository.OpenThreadInCodex(thread.Id);
-                setStatus("Opened Codex deep link");
+                setStatus(T("OpenedCodexLink"));
             }
             catch (Exception ex)
             {
-                setStatus($"Open failed: {ex.Message}");
+                setStatus(T("OpenFailed", ex.Message));
             }
         }
 
@@ -1164,17 +1512,22 @@ internal class App : Component
             try
             {
                 ThreadShelfRepository.RevealFile(thread.SourcePath);
-                setStatus("Opened session file location");
+                setStatus(T("OpenedSessionLocation"));
             }
             catch (Exception ex)
             {
-                setStatus($"Reveal failed: {ex.Message}");
+                setStatus(T("RevealFailed", ex.Message));
             }
         }
 
         void ToggleArchive()
         {
             setArchived(thread, !thread.IsArchived);
+        }
+
+        void Resume()
+        {
+            resumeThread(thread);
         }
 
         void RenameIfChanged(string value)
@@ -1234,38 +1587,38 @@ internal class App : Component
         return Border(
                 (ScrollViewer(
                     FlexColumn(
-                    BodyStrong("Thread").Flex(shrink: 0),
+                    BodyStrong(T("Thread")).Flex(shrink: 0),
                     If(
                         supportsNativeActions,
                         () => TextBox(
                                 titleDraft,
                                 setTitleDraft,
-                                placeholderText: "Codex title",
-                                header: "Codex title")
+                                placeholderText: T("CodexTitle"),
+                                header: T("CodexTitle"))
                             .AutomationId("ThreadTitleTextBox")
                             .OnLostFocus((sender, _) => RenameFromSender(sender))
                             .OnKeyDown(RenameOnEnter)
                             .Flex(shrink: 0),
-                        () => BodyLarge(thread.DisplayTitle)
+                        () => BodyLarge(ThreadTitle(thread))
                             .TextWrapping()
                             .Flex(shrink: 0)),
-                    MetadataLine("Updated", thread.UpdatedLocal),
-                    MetadataLine("Thread ID", thread.Id),
-                    MetadataLine("Workspace", EmptyText(thread.Workspace)),
-                    MetadataLine("Model", EmptyText(thread.Model)),
-                    MetadataLine("State", thread.IsArchived ? "Archived" : "Active"),
+                    MetadataLine(T("Updated"), thread.UpdatedLocal),
+                    MetadataLine(T("ThreadId"), thread.Id),
+                    MetadataLine(T("Workspace"), EmptyText(thread.Workspace)),
+                    MetadataLine(T("Model"), EmptyText(thread.Model)),
+                    MetadataLine(T("State"), thread.IsArchived ? T("Archived") : T("Unarchived")),
                     Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 4, 0, 4),
                     CheckBox(
                             draft.Favorite,
                             value => SaveMetadataDraft(draft with { Favorite = value }),
-                            "Favorite")
+                            T("Favorite"))
                         .AutomationId("FavoriteCheckBox")
                         .Flex(shrink: 0),
                     TextBox(
                             draft.Folder,
                             value => setDraft(draft with { Folder = value }),
-                            placeholderText: "Folder",
-                            header: "Folder")
+                            placeholderText: T("Folder"),
+                            header: T("Folder"))
                         .AutomationId("FolderTextBox")
                         .OnLostFocus((sender, _) => SaveFolderFromSender(sender))
                         .OnKeyDown((sender, args) => SaveOnEnter(sender, args, SaveFolderFromSender))
@@ -1275,28 +1628,36 @@ internal class App : Component
                     TextBox(
                             draft.Notes,
                             value => setDraft(draft with { Notes = value }),
-                            placeholderText: "Notes",
-                            header: "Notes")
+                            placeholderText: T("Notes"),
+                            header: T("Notes"))
                         .AutomationId("NotesTextBox")
                         .OnLostFocus((sender, _) => SaveNotesFromSender(sender))
                         .AcceptsReturn()
                         .TextWrapping()
                         .MinHeight(118)
                         .Flex(shrink: 0),
-                    If(
-                        supportsNativeActions,
-                        () => DetailsButton(thread.IsArchived ? "Unarchive" : "Archive", ToggleArchive)
-                            .AutomationName(thread.IsArchived ? "Unarchive thread" : "Archive thread")
-                            .AutomationId("ArchiveToggleButton")
-                            .HAlign(HorizontalAlignment.Stretch)
-                            .Flex(shrink: 0),
-                        () => Empty()),
+                    DetailsButton(thread.IsArchived ? T("Unarchive") : T("Archive"), ToggleArchive)
+                        .AutomationName(ArchiveAutomationName(thread, supportsNativeActions, pendingArchiveId))
+                        .AutomationId("ArchiveToggleButton")
+                        .ToolTip(ArchiveToolTip(thread, supportsNativeActions, pendingArchiveId))
+                        .IsEnabled(supportsNativeActions && pendingArchiveId.Length == 0)
+                        .HAlign(HorizontalAlignment.Stretch)
+                        .Flex(shrink: 0),
+                    DetailsButton(T("Resume"), Resume)
+                        .AutomationName(ResumeAutomationName(interactiveLauncher, thread))
+                        .AutomationId("ResumeThreadButton")
+                        .ToolTip(ResumeToolTip(interactiveLauncher, thread))
+                        .IsEnabled(interactiveLauncher.CheckAvailability(thread.Workspace).CanLaunch)
+                        .HAlign(HorizontalAlignment.Stretch)
+                        .Flex(shrink: 0),
                     FlexRow(
-                        Button("Open", OpenInCodex)
+                        Button(T("Open"), OpenInCodex)
+                            .AutomationName(T("Open"))
                             .AutomationId("OpenInCodexButton")
                             .SubtleButton()
                             .Flex(grow: 1, basis: 0),
-                        Button("Reveal", RevealJsonl)
+                        Button(T("Reveal"), RevealJsonl)
+                            .AutomationName(T("Reveal"))
                             .AutomationId("RevealFileButton")
                             .SubtleButton()
                             .Flex(grow: 1, basis: 0))
@@ -1348,14 +1709,14 @@ internal class App : Component
             .ToArray();
 
         return FlexColumn(
-                BodyStrong("Thread tags"),
+                BodyStrong(T("ThreadTags")),
                 If(
                     tags.Count == 0,
-                    () => Caption("No global tags").Foreground(Theme.SecondaryText),
+                    () => Caption(T("NoGlobalTags")).Foreground(Theme.SecondaryText),
                     () => FlexColumn(
                             If(
                                 selectedButtons.Length == 0,
-                                () => Caption("No tags selected").Foreground(Theme.SecondaryText),
+                                () => Caption(T("NoTagsSelected")).Foreground(Theme.SecondaryText),
                                 () => FlexRow(selectedButtons) with
                                 {
                                     ColumnGap = 6,
@@ -1367,7 +1728,7 @@ internal class App : Component
                                 availableButtons.Length == 0,
                                 () => Empty(),
                                 () => FlexColumn(
-                                        BodyStrong("Add tags"),
+                                        BodyStrong(T("AddTags")),
                                         FlexRow(availableButtons) with
                                         {
                                             ColumnGap = 6,
@@ -1383,8 +1744,8 @@ internal class App : Component
                     {
                         RowGap = 8
                     }),
-                DetailsButton("Manage tags", openTagManager)
-                    .AutomationName("Open tag manager")
+                DetailsButton(T("ManageTags"), openTagManager)
+                    .AutomationName(T("OpenTagManager"))
                     .AutomationId("OpenTagManagerButton")
                     .HAlign(HorizontalAlignment.Stretch))
             with
@@ -1418,6 +1779,138 @@ internal class App : Component
                 .Set("ButtonBorderBrushDisabled", Theme.Ref("ControlStrokeColorDefaultBrush")));
     }
 
+    private static ButtonElement CardResumeButton(
+        CodexThread thread,
+        Action<CodexThread> selectThread,
+        Action<CodexThread> resumeThread,
+        CodexInteractiveLauncher interactiveLauncher)
+    {
+        var availability = interactiveLauncher.CheckAvailability(thread.Workspace);
+        return Button($"▶  {T("Resume")}", () =>
+                {
+                    selectThread(thread);
+                    resumeThread(thread);
+                })
+            .AutomationName(ResumeAutomationName(interactiveLauncher, thread))
+            .AutomationId($"ResumeThreadButton_{AutomationToken(thread.Id)}")
+            .ToolTip(availability.CanLaunch
+                ? T("ResumeToolTip")
+                : CodexLaunchProblemText(availability.Problem, availability.Workspace))
+            .IsEnabled(availability.CanLaunch)
+            .Set(button =>
+            {
+                button.MinHeight = 26;
+                button.Width = 86;
+                button.Padding = new Thickness(8, 3, 9, 3);
+                button.CornerRadius = new CornerRadius(13);
+                button.BorderThickness = new Thickness(1);
+                button.HorizontalContentAlignment = HorizontalAlignment.Center;
+            })
+            .Resources(resources => resources
+                .Set("ButtonBackground", Theme.Ref("SubtleFillColorTransparentBrush"))
+                .Set("ButtonBackgroundPointerOver", Theme.ControlFillSecondary)
+                .Set("ButtonBackgroundPressed", Theme.ControlFillTertiary)
+                .Set("ButtonBackgroundDisabled", Theme.Ref("SubtleFillColorDisabledBrush"))
+                .Set("ButtonForeground", Theme.AccentText)
+                .Set("ButtonForegroundPointerOver", Theme.AccentText)
+                .Set("ButtonForegroundPressed", Theme.AccentText)
+                .Set("ButtonForegroundDisabled", Theme.DisabledText)
+                .Set("ButtonBorderBrush", Theme.AccentTertiary)
+                .Set("ButtonBorderBrushPointerOver", Theme.Accent)
+                .Set("ButtonBorderBrushPressed", Theme.AccentSecondary)
+                .Set("ButtonBorderBrushDisabled", Theme.ControlStroke));
+    }
+
+    private static ButtonElement ArchiveStatusButton(
+        CodexThread thread,
+        string status,
+        Action<CodexThread, bool> setArchived,
+        bool supportsNativeActions,
+        string pendingArchiveId)
+    {
+        var background = thread.IsArchived
+            ? Theme.SystemNeutralBackground
+            : Theme.SystemSuccessBackground;
+
+        return Button(status, () => setArchived(thread, !thread.IsArchived))
+            .AutomationName(ArchiveAutomationName(thread, supportsNativeActions, pendingArchiveId))
+            .AutomationId($"ArchiveStatus_{AutomationToken(thread.Id)}")
+            .ToolTip(ArchiveToolTip(thread, supportsNativeActions, pendingArchiveId))
+            .IsEnabled(supportsNativeActions && pendingArchiveId.Length == 0)
+            .Set(button =>
+            {
+                button.MinHeight = 0;
+                button.Padding = new Thickness(7, 2, 7, 2);
+                button.CornerRadius = new CornerRadius(4);
+                button.BorderThickness = new Thickness(1);
+            })
+            .Resources(resources => resources
+                .Set("ButtonBackground", background)
+                .Set("ButtonBackgroundPointerOver", background)
+                .Set("ButtonBackgroundPressed", background)
+                .Set("ButtonBackgroundDisabled", Theme.Ref("ControlFillColorDisabledBrush"))
+                .Set("ButtonForeground", Theme.PrimaryText)
+                .Set("ButtonForegroundPointerOver", Theme.PrimaryText)
+                .Set("ButtonForegroundPressed", Theme.PrimaryText)
+                .Set("ButtonForegroundDisabled", Theme.Ref("TextFillColorDisabledBrush"))
+                .Set("ButtonBorderBrush", background)
+                .Set("ButtonBorderBrushPointerOver", Theme.ControlStrokeSecondary)
+                .Set("ButtonBorderBrushPressed", Theme.PrimaryText)
+                .Set("ButtonBorderBrushDisabled", Theme.Ref("ControlStrokeColorDefaultBrush")));
+    }
+
+    private static string ArchiveAutomationName(
+        CodexThread thread,
+        bool supportsNativeActions,
+        string pendingArchiveId)
+    {
+        var state = thread.IsArchived ? T("Archived") : T("Unarchived");
+        var title = ThreadTitle(thread);
+        if (!supportsNativeActions)
+        {
+            return T("ArchiveActionUnavailableAutomation", state, title);
+        }
+
+        if (pendingArchiveId.Equals(thread.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            return thread.IsArchived
+                ? T("UnarchivingAutomation", title)
+                : T("ArchivingAutomation", title);
+        }
+
+        if (pendingArchiveId.Length > 0)
+        {
+            return T("ArchiveActionBusyAutomation", state, title);
+        }
+
+        return thread.IsArchived
+            ? T("ArchivedAutomation", title)
+            : T("ArchiveAutomation", title);
+    }
+
+    private static string ArchiveToolTip(
+        CodexThread thread,
+        bool supportsNativeActions,
+        string pendingArchiveId)
+    {
+        if (!supportsNativeActions)
+        {
+            return T("ArchiveActionUnavailable");
+        }
+
+        if (pendingArchiveId.Equals(thread.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            return thread.IsArchived ? T("UnarchivingToolTip") : T("ArchivingToolTip");
+        }
+
+        if (pendingArchiveId.Length > 0)
+        {
+            return T("ArchiveActionBusy");
+        }
+
+        return thread.IsArchived ? T("UnarchiveToolTip") : T("ArchiveToolTip");
+    }
+
     private static BorderElement RenderTagManagerPage(
         IReadOnlyList<CodexThread> threads,
         IReadOnlyList<TagDefinition> tags,
@@ -1445,16 +1938,18 @@ internal class App : Component
         return Border(
                 FlexColumn(
                     FlexRow(
-                        BodyStrong("Tag manager").Flex(grow: 1, basis: 0),
-                        Button("New tag", () =>
+                        BodyStrong(T("TagManager")).Flex(grow: 1, basis: 0),
+                        Button(T("NewTag"), () =>
                             {
                                 setPendingDeleteTag("");
                                 setTagEditor(TagEditorDraft.Empty);
                             })
+                            .AutomationName(T("NewTag"))
                             .AutomationId("TagManagerNew")
                             .SubtleButton()
                             .Flex(shrink: 0),
-                        Button("Back", close)
+                        Button(T("Back"), close)
+                            .AutomationName(T("Back"))
                             .AutomationId("TagManagerBack")
                             .SubtleButton()
                             .Flex(shrink: 0))
@@ -1468,8 +1963,8 @@ internal class App : Component
                             rows.Length == 0,
                             () => Border(
                                     FlexColumn(
-                                        BodyLarge("No tags"),
-                                        Caption("Create a tag to use it on threads.").Foreground(Theme.SecondaryText))
+                                        BodyLarge(T("NoTags")),
+                                        Caption(T("CreateTagHint")).Foreground(Theme.SecondaryText))
                                     with
                                     {
                                         RowGap = 8,
@@ -1485,30 +1980,30 @@ internal class App : Component
                                 .Flex(grow: 1, basis: 0)),
                         Border(
                                 FlexColumn(
-                                    BodyStrong(tagEditor.EditingName.Length == 0 ? "New tag" : "Edit tag"),
+                                    BodyStrong(tagEditor.EditingName.Length == 0 ? T("NewTag") : T("EditTag")),
                                     TextBox(
                                             tagEditor.Name,
                                             value => setTagEditor(tagEditor with { Name = value }),
-                                            placeholderText: "tag name",
-                                            header: "Name")
+                                            placeholderText: T("TagName"),
+                                            header: T("Name"))
                                         .AutomationId("TagEditorName")
                                         .Flex(shrink: 0),
                                     RenderTagColorPicker(tagEditor, setTagEditorColor),
                                     TextBox(
                                             tagEditor.Description,
                                             value => setTagEditor(tagEditor with { Description = value }),
-                                            placeholderText: "Description",
-                                            header: "Description")
+                                            placeholderText: T("Description"),
+                                            header: T("Description"))
                                         .AutomationId("TagEditorDescription")
                                         .Flex(shrink: 0),
                                     FlexRow(
-                                        Button(tagEditor.EditingName.Length == 0 ? "Create" : "Save", saveTagDefinition)
-                                            .AutomationName(tagEditor.EditingName.Length == 0 ? "Create tag" : "Save tag")
+                                        Button(tagEditor.EditingName.Length == 0 ? T("Create") : T("Save"), saveTagDefinition)
+                                            .AutomationName(tagEditor.EditingName.Length == 0 ? T("CreateTag") : T("SaveTag"))
                                             .AutomationId("TagEditorSave")
                                             .AccentButton()
                                             .Flex(grow: 1, basis: 0),
-                                        Button("Cancel", () => setTagEditor(TagEditorDraft.Empty))
-                                            .AutomationName("Cancel tag edit")
+                                        Button(T("Cancel"), () => setTagEditor(TagEditorDraft.Empty))
+                                            .AutomationName(T("CancelTagEdit"))
                                             .AutomationId("TagEditorCancel")
                                             .SubtleButton()
                                             .Flex(shrink: 0))
@@ -1550,7 +2045,7 @@ internal class App : Component
         var normalized = ThreadShelfRepository.NormalizeTagColor(tagEditor.Color);
         return FlexColumn(
                 FlexRow(
-                    BodyStrong("Color").Flex(grow: 1, basis: 0),
+                    BodyStrong(T("Color")).Flex(grow: 1, basis: 0),
                     Border(Empty())
                         .Size(30, 30)
                         .CornerRadius(4)
@@ -1569,6 +2064,7 @@ internal class App : Component
                 ColorPicker(
                         TagColorToWinUIColor(tagEditor.Color),
                         color => setTagEditorColor(tagEditor, color))
+                    .AutomationName(T("Color"))
                     .AutomationId("TagEditorColor")
                     .AlphaEnabled(false)
                     .ColorChannelTextInputVisible(false)
@@ -1586,7 +2082,7 @@ internal class App : Component
     {
         var foreground = ForegroundFor(tag.Color);
         return Button(tag.Name, toggle)
-            .AutomationName(selected ? $"Remove tag {tag.Name}" : $"Add tag {tag.Name}")
+            .AutomationName(selected ? T("RemoveTag", tag.Name) : T("AddTag", tag.Name))
             .AutomationId($"ThreadTagToggle_{AutomationToken(tag.Name)}")
             .ToolTip(string.IsNullOrWhiteSpace(tag.Description) ? tag.Name : tag.Description)
             .Resources(resources => _ = selected
@@ -1627,13 +2123,13 @@ internal class App : Component
                             .Foreground(Theme.SecondaryText)
                             .TextTrimming(TextTrimming.CharacterEllipsis)
                             .MaxLines(1),
-                        Caption($"{summary.Count:N0} threads")
+                        Caption(T("ThreadCount", summary.Count))
                             .Foreground(Theme.TertiaryText))
                     with
                     {
                         RowGap = 2
                     }).Flex(grow: 1, basis: 0),
-                    Button("Edit", () =>
+                    Button(T("Edit"), () =>
                         {
                             setPendingDeleteTag("");
                             setTagEditor(new TagEditorDraft(
@@ -1642,10 +2138,11 @@ internal class App : Component
                                 tag.Color,
                                 tag.Description));
                         })
+                        .AutomationName(T("EditTag"))
                         .AutomationId($"TagEdit_{AutomationToken(tag.Name)}")
                         .SubtleButton()
                         .Flex(shrink: 0),
-                    Button(confirmingDelete ? "Confirm" : "Delete", () =>
+                    Button(confirmingDelete ? T("Confirm") : T("Delete"), () =>
                         {
                             if (confirmingDelete)
                             {
@@ -1656,7 +2153,7 @@ internal class App : Component
                                 setPendingDeleteTag(tag.Name);
                             }
                         })
-                        .AutomationName(confirmingDelete ? $"Confirm delete tag {tag.Name}" : $"Delete tag {tag.Name}")
+                        .AutomationName(confirmingDelete ? T("ConfirmDeleteTag", tag.Name) : T("DeleteTag", tag.Name))
                         .AutomationId($"TagDelete_{AutomationToken(tag.Name)}")
                         .SubtleButton()
                         .Flex(shrink: 0))
@@ -1728,11 +2225,107 @@ internal class App : Component
 
     private static string DescribeLoad(ThreadShelfSnapshot snapshot)
     {
-        var description = $"Loaded {snapshot.Threads.Count:N0} Codex threads via {snapshot.DataSource}";
-        return string.IsNullOrWhiteSpace(snapshot.LoadWarning)
-            ? description
-            : $"{description}; {snapshot.LoadWarning}";
+        var description = T("LoadedThreads", snapshot.Threads.Count, DataSourceLabel(snapshot));
+        if (string.IsNullOrWhiteSpace(snapshot.LoadWarning))
+        {
+            return description;
+        }
+
+        var separator = snapshot.LoadWarning.IndexOf(": ", StringComparison.Ordinal);
+        var detail = separator >= 0 ? snapshot.LoadWarning[(separator + 2)..] : snapshot.LoadWarning;
+        return $"{description}; {T("ProviderUnavailableWarning", detail)}";
     }
+
+    private static string T(string key, params object?[] args) => UiText.Get(key, args);
+
+    private static string[] LanguageOptions() =>
+        [T("SystemDefault"), T("English"), T("SimplifiedChinese")];
+
+    private static int LanguagePreferenceIndex(string preference) =>
+        UiText.NormalizeLanguagePreference(preference) switch
+        {
+            UiText.EnglishLanguage => 1,
+            UiText.SimplifiedChineseLanguage => 2,
+            _ => 0
+        };
+
+    private static string LanguagePreferenceForIndex(int index) =>
+        index switch
+        {
+            1 => UiText.EnglishLanguage,
+            2 => UiText.SimplifiedChineseLanguage,
+            _ => UiText.SystemLanguage
+        };
+
+    private static string LanguageDisplayName(string preference, System.Globalization.CultureInfo culture) =>
+        UiText.NormalizeLanguagePreference(preference) switch
+        {
+            UiText.EnglishLanguage => UiText.Get("English", culture),
+            UiText.SimplifiedChineseLanguage => UiText.Get("SimplifiedChinese", culture),
+            _ => UiText.Get("SystemDefault", culture)
+        };
+
+    private static string ThreadTitle(CodexThread thread) =>
+        string.IsNullOrWhiteSpace(thread.Title) ? T("UntitledThread") : thread.Title.Trim();
+
+    private static string FolderDisplayName(CodexThread thread) =>
+        string.IsNullOrWhiteSpace(thread.Metadata.Folder) ? T("Unfiled") : thread.Metadata.Folder.Trim();
+
+    private static string ProjectDisplayName(
+        string? workspace,
+        IReadOnlyDictionary<string, string> projectAliases) =>
+        string.IsNullOrWhiteSpace(ThreadFilters.NormalizeProjectKey(workspace))
+            ? T("NoProject")
+            : ThreadFilters.ProjectDisplayNameForWorkspace(workspace, projectAliases);
+
+    private static string DataSourceLabel(ThreadShelfSnapshot snapshot) =>
+        snapshot.SupportsNativeActions ? T("DataSourceAppServer") : T("DataSourceLocal");
+
+    private static string RenameValidationMessage(ThreadShelfValidationException exception) =>
+        exception.Code switch
+        {
+            "rename_name_empty" => T("RenameNameEmpty"),
+            "rename_name_conflict" => T("RenameNameConflict"),
+            "project_not_found" => T("ProjectNotFound"),
+            "folder_not_found" => T("FolderNotFound"),
+            _ => T("RenameFailed", exception.Message)
+        };
+
+    private static string ResumeToolTip(CodexInteractiveLauncher launcher, CodexThread thread)
+    {
+        var availability = launcher.CheckAvailability(thread.Workspace);
+        return availability.CanLaunch
+            ? T("ResumeToolTip")
+            : CodexLaunchProblemText(availability.Problem, availability.Workspace);
+    }
+
+    private static string ResumeAutomationName(CodexInteractiveLauncher launcher, CodexThread thread)
+    {
+        var availability = launcher.CheckAvailability(thread.Workspace);
+        return availability.CanLaunch
+            ? T("ResumeAutomation", ThreadTitle(thread))
+            : T(
+                "ResumeUnavailableAutomation",
+                ThreadTitle(thread),
+                CodexLaunchProblemText(availability.Problem, availability.Workspace));
+    }
+
+    private static string CodexLaunchError(Exception exception) =>
+        exception is CodexLaunchException launchException
+            ? launchException.Problem == CodexLaunchProblem.None
+                ? T("TerminalStartFailed", launchException.InnerException?.Message ?? launchException.Message)
+                : CodexLaunchProblemText(launchException.Problem, launchException.Detail ?? "")
+            : exception.Message;
+
+    private static string CodexLaunchProblemText(CodexLaunchProblem problem, string workspace) =>
+        problem switch
+        {
+            CodexLaunchProblem.CliNotFound => T("CodexCliNotFound"),
+            CodexLaunchProblem.WorkspaceMissing => T("WorkspaceMissingLaunch"),
+            CodexLaunchProblem.WorkspaceNotFound => T("WorkspaceNotFoundLaunch", workspace),
+            CodexLaunchProblem.ThreadIdMissing => T("ThreadIdMissingLaunch"),
+            _ => T("CodexLaunchUnavailable")
+        };
 
     private static bool SameMetadata(ThreadMetadata left, ThreadMetadata right)
     {
