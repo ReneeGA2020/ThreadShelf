@@ -259,6 +259,44 @@ public sealed class ThreadShelfCommandServiceTests : IDisposable
         Assert.Equal("native_action_unsupported", result.Error?.Code);
     }
 
+    [Fact]
+    public void RepositoryFactoryIsReplaceableAndReceivesRequestedCodexHome()
+    {
+        string? requestedCodexHome = null;
+        var service = new ThreadShelfCommandService(codexHome =>
+        {
+            requestedCodexHome = codexHome;
+            return new ThreadShelfRepository(codexHome);
+        });
+
+        var result = service.ListThreads(new ListThreadsRequest { CodexHome = _codexHome });
+
+        AssertSuccess(result);
+        Assert.Equal(_codexHome, requestedCodexHome);
+    }
+
+    [Fact]
+    public void ServiceValidationKeepsCommandErrorCodesCompatible()
+    {
+        var emptyTag = _service.CreateTag(new CreateTagRequest
+        {
+            CodexHome = _codexHome,
+            Name = "   ",
+            Color = "#D1242F"
+        });
+        Assert.False(emptyTag.Ok);
+        Assert.Equal("invalid_argument", emptyTag.Error?.Code);
+
+        var invalidColor = _service.CreateTag(new CreateTagRequest
+        {
+            CodexHome = _codexHome,
+            Name = "bug",
+            Color = "purple"
+        });
+        Assert.False(invalidColor.Ok);
+        Assert.Equal("invalid_argument", invalidColor.Error?.Code);
+    }
+
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("THREADSHELF_CODEX_CLI", _previousCodexCli);

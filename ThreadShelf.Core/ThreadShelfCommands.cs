@@ -165,6 +165,19 @@ public sealed record RenameThreadRequest
 
 public sealed class ThreadShelfCommandService
 {
+    private readonly Func<string?, IThreadShelfRepository> _repositoryFactory;
+
+    public ThreadShelfCommandService()
+        : this(codexHome => new ThreadShelfRepository(codexHome))
+    {
+    }
+
+    public ThreadShelfCommandService(Func<string?, IThreadShelfRepository> repositoryFactory)
+    {
+        _repositoryFactory = repositoryFactory
+            ?? throw new ArgumentNullException(nameof(repositoryFactory));
+    }
+
     public ThreadShelfCommandResult<IReadOnlyList<ThreadDto>> ListThreads(ListThreadsRequest request)
     {
         if (request.Limit is < 0)
@@ -175,8 +188,9 @@ public sealed class ThreadShelfCommandService
                 new { request.Limit });
         }
 
-        return WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        return WithService(request.CodexHome, service =>
         {
+            var snapshot = service.Load();
             var folder = string.IsNullOrWhiteSpace(request.Folder)
                 ? ThreadFilters.All
                 : request.Folder.Trim();
@@ -204,365 +218,83 @@ public sealed class ThreadShelfCommandService
         ListThreads(request);
 
     public ThreadShelfCommandResult<ThreadDto> GetThread(GetThreadRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        WithService(request.CodexHome, service =>
         {
-            if (string.IsNullOrWhiteSpace(request.ThreadId))
-            {
-                return ThreadShelfCommandResult<ThreadDto>.Failure(
-                    "invalid_argument",
-                    "Thread id is required.");
-            }
-
-            var thread = FindThread(snapshot, request.ThreadId);
-            return thread is null
-                ? ThreadNotFound<ThreadDto>(request.ThreadId)
-                : Success(ToDto(thread), snapshot);
+            var result = service.GetThread(request.ThreadId);
+            return Success(ToDto(result.Data), result.Snapshot);
         });
 
     public ThreadShelfCommandResult<ThreadDto> UpdateThreadMetadata(UpdateThreadMetadataRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        WithService(request.CodexHome, service =>
         {
-            if (string.IsNullOrWhiteSpace(request.ThreadId))
-            {
-                return ThreadShelfCommandResult<ThreadDto>.Failure(
-                    "invalid_argument",
-                    "Thread id is required.");
-            }
-
-            if (request.Folder is null && request.Notes is null && request.Favorite is null)
-            {
-                return ThreadShelfCommandResult<ThreadDto>.Failure(
-                    "invalid_argument",
-                    "At least one metadata field must be supplied.");
-            }
-
-            var thread = FindThread(snapshot, request.ThreadId);
-            if (thread is null)
-            {
-                return ThreadNotFound<ThreadDto>(request.ThreadId);
-            }
-
-            var metadata = ThreadShelfRepository.MetadataFrom(
-                new EditDraft(
-                    request.Folder ?? thread.Metadata.Folder,
-                    request.Notes ?? thread.Metadata.Notes,
-                    request.Favorite ?? thread.Metadata.Favorite),
-                thread.Metadata.Tags);
-
-            return SaveMetadataAndReload(repository, snapshot, thread.Id, metadata);
+            var result = service.UpdateThreadMetadata(
+                request.ThreadId,
+                request.Folder,
+                request.Notes,
+                request.Favorite);
+            return Success(ToDto(result.Data), result.Snapshot);
         });
 
     public ThreadShelfCommandResult<ThreadDto> MoveThread(MoveThreadRequest request) =>
-        UpdateThreadMetadata(new UpdateThreadMetadataRequest
+        WithService(request.CodexHome, service =>
         {
-            CodexHome = request.CodexHome,
-            ThreadId = request.ThreadId,
-            Folder = request.Folder ?? ""
+            var result = service.MoveThread(request.ThreadId, request.Folder);
+            return Success(ToDto(result.Data), result.Snapshot);
         });
 
     public ThreadShelfCommandResult<ThreadDto> AddThreadTag(ThreadTagRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
-        {
-            var tagName = ThreadShelfRepository.NormalizeTagName(request.Tag);
-            if (tagName.Length == 0)
-            {
-                return ThreadShelfCommandResult<ThreadDto>.Failure(
-                    "invalid_argument",
-                    "Tag name is required.");
-            }
-
-            var thread = FindThread(snapshot, request.ThreadId);
-            if (thread is null)
-            {
-                return ThreadNotFound<ThreadDto>(request.ThreadId);
-            }
-
-            var tag = FindTag(snapshot, tagName);
-            if (tag is null)
-            {
-                return TagNotFound<ThreadDto>(tagName);
-            }
-
-            if (thread.Metadata.Tags.Any(name => name.Equals(tag.Name, StringComparison.OrdinalIgnoreCase)))
-            {
-                return Success(ToDto(thread), snapshot);
-            }
-
-            var metadata = thread.Metadata with
-            {
-                Tags = thread.Metadata.Tags
-                    .Concat([tag.Name])
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
-                    .ToList()
-            };
-
-            return SaveMetadataAndReload(repository, snapshot, thread.Id, metadata);
-        });
+        SetThreadTag(request, assigned: true);
 
     public ThreadShelfCommandResult<ThreadDto> RemoveThreadTag(ThreadTagRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
-        {
-            var tagName = ThreadShelfRepository.NormalizeTagName(request.Tag);
-            if (tagName.Length == 0)
-            {
-                return ThreadShelfCommandResult<ThreadDto>.Failure(
-                    "invalid_argument",
-                    "Tag name is required.");
-            }
-
-            var thread = FindThread(snapshot, request.ThreadId);
-            if (thread is null)
-            {
-                return ThreadNotFound<ThreadDto>(request.ThreadId);
-            }
-
-            if (FindTag(snapshot, tagName) is null
-                && !thread.Metadata.Tags.Any(name => name.Equals(tagName, StringComparison.OrdinalIgnoreCase)))
-            {
-                return TagNotFound<ThreadDto>(tagName);
-            }
-
-            var metadata = thread.Metadata with
-            {
-                Tags = thread.Metadata.Tags
-                    .Where(name => !name.Equals(tagName, StringComparison.OrdinalIgnoreCase))
-                    .ToList()
-            };
-
-            return SaveMetadataAndReload(repository, snapshot, thread.Id, metadata);
-        });
+        SetThreadTag(request, assigned: false);
 
     public ThreadShelfCommandResult<IReadOnlyList<TagDto>> ListTags(ListTagsRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
-            Success(GetTagDtos(snapshot), snapshot));
+        WithService(request.CodexHome, service =>
+        {
+            var snapshot = service.Load();
+            return Success(GetTagDtos(snapshot), snapshot);
+        });
 
     public ThreadShelfCommandResult<TagDto> CreateTag(CreateTagRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        WithService(request.CodexHome, service =>
         {
-            var name = ThreadShelfRepository.NormalizeTagName(request.Name);
-            if (name.Length == 0)
-            {
-                return ThreadShelfCommandResult<TagDto>.Failure(
-                    "invalid_argument",
-                    "Tag name is required.");
-            }
-
-            if (!ThreadShelfRepository.IsValidTagColor(request.Color))
-            {
-                return ThreadShelfCommandResult<TagDto>.Failure(
-                    "invalid_argument",
-                    "Tag color must be #RRGGBB.",
-                    new { request.Color });
-            }
-
-            if (FindTag(snapshot, name) is not null)
-            {
-                return ThreadShelfCommandResult<TagDto>.Failure(
-                    "tag_conflict",
-                    $"Tag '{name}' already exists.",
-                    new { name });
-            }
-
-            repository.SaveTagDefinition(
-                "",
-                new TagDefinition
-                {
-                    Name = name,
-                    Color = request.Color,
-                    Description = request.Description
-                });
-
-            return ReloadTag(repository, name);
+            var result = service.CreateTag(request.Name, request.Color, request.Description);
+            return Success(ToTagDto(result.Snapshot, result.Data), result.Snapshot);
         });
 
     public ThreadShelfCommandResult<TagDto> UpdateTag(UpdateTagRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        WithService(request.CodexHome, service =>
         {
-            var oldName = ThreadShelfRepository.NormalizeTagName(request.Name);
-            if (oldName.Length == 0)
-            {
-                return ThreadShelfCommandResult<TagDto>.Failure(
-                    "invalid_argument",
-                    "Tag name is required.");
-            }
-
-            var current = FindTag(snapshot, oldName);
-            if (current is null)
-            {
-                return TagNotFound<TagDto>(oldName);
-            }
-
-            var nextName = ThreadShelfRepository.NormalizeTagName(request.NewName ?? current.Name);
-            if (nextName.Length == 0)
-            {
-                return ThreadShelfCommandResult<TagDto>.Failure(
-                    "invalid_argument",
-                    "New tag name cannot be empty.");
-            }
-
-            var existing = FindTag(snapshot, nextName);
-            if (existing is not null && !existing.Name.Equals(current.Name, StringComparison.OrdinalIgnoreCase))
-            {
-                return ThreadShelfCommandResult<TagDto>.Failure(
-                    "tag_conflict",
-                    $"Tag '{nextName}' already exists.",
-                    new { name = nextName });
-            }
-
-            var color = request.Color ?? current.Color;
-            if (!ThreadShelfRepository.IsValidTagColor(color))
-            {
-                return ThreadShelfCommandResult<TagDto>.Failure(
-                    "invalid_argument",
-                    "Tag color must be #RRGGBB.",
-                    new { color });
-            }
-
-            repository.SaveTagDefinition(
-                oldName,
-                new TagDefinition
-                {
-                    Name = nextName,
-                    Color = color,
-                    Description = request.Description ?? current.Description
-                });
-
-            return ReloadTag(repository, nextName);
+            var result = service.UpdateTag(
+                request.Name,
+                request.NewName,
+                request.Color,
+                request.Description);
+            return Success(ToTagDto(result.Snapshot, result.Data), result.Snapshot);
         });
 
     public ThreadShelfCommandResult<IReadOnlyList<TagDto>> DeleteTag(DeleteTagRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        WithService(request.CodexHome, service =>
         {
-            var name = ThreadShelfRepository.NormalizeTagName(request.Name);
-            if (name.Length == 0)
-            {
-                return ThreadShelfCommandResult<IReadOnlyList<TagDto>>.Failure(
-                    "invalid_argument",
-                    "Tag name is required.");
-            }
-
-            if (FindTag(snapshot, name) is null)
-            {
-                return TagNotFound<IReadOnlyList<TagDto>>(name);
-            }
-
-            repository.DeleteTagDefinition(name);
-            var reloaded = repository.Load();
-            return Success(GetTagDtos(reloaded), reloaded);
+            var result = service.DeleteTag(request.Name);
+            return Success(GetTagDtos(result.Snapshot), result.Snapshot);
         });
 
     public ThreadShelfCommandResult<ApplyOrganizationResult> ApplyOrganization(
         ApplyOrganizationRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        WithService(request.CodexHome, service =>
         {
-            var requestedTags = request.Tags ?? [];
-            var requestedThreads = request.Threads ?? [];
-            if (requestedTags.Count == 0 && requestedThreads.Count == 0)
-            {
-                return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
-                    "invalid_argument",
-                    "At least one tag definition or thread update is required.");
-            }
-
-            var tags = new List<TagDefinition>(requestedTags.Count);
-            var tagNames = new HashSet<string>(
-                snapshot.Tags.Select(tag => tag.Name),
-                StringComparer.OrdinalIgnoreCase);
-
-            foreach (var tag in requestedTags)
-            {
-                if (tag is null)
-                {
-                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
-                        "invalid_argument",
-                        "Tag definitions cannot contain null entries.");
-                }
-
-                var name = ThreadShelfRepository.NormalizeTagName(tag.Name);
-                if (name.Length == 0)
-                {
-                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
-                        "invalid_argument",
-                        "Tag name is required.");
-                }
-
-                if (!ThreadShelfRepository.IsValidTagColor(tag.Color))
-                {
-                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
-                        "invalid_argument",
-                        "Tag color must be #RRGGBB.",
-                        new { name, tag.Color });
-                }
-
-                if (tags.Any(candidate => candidate.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
-                {
-                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
-                        "invalid_argument",
-                        $"Tag '{name}' appears more than once in the organization request.",
-                        new { name });
-                }
-
-                tags.Add(tag with { Name = name });
-                tagNames.Add(name);
-            }
-
-            var updates = new Dictionary<string, ThreadMetadata>(StringComparer.OrdinalIgnoreCase);
-            foreach (var update in requestedThreads)
-            {
-                if (update is null)
-                {
-                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
-                        "invalid_argument",
-                        "Thread updates cannot contain null entries.");
-                }
-
-                var threadId = (update.ThreadId ?? "").Trim();
-                if (threadId.Length == 0)
-                {
-                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
-                        "invalid_argument",
-                        "Thread id is required for every organization update.");
-                }
-
-                if (updates.ContainsKey(threadId))
-                {
-                    return ThreadShelfCommandResult<ApplyOrganizationResult>.Failure(
-                        "invalid_argument",
-                        $"Thread '{threadId}' appears more than once in the organization request.",
-                        new { threadId });
-                }
-
-                var thread = FindThread(snapshot, threadId);
-                if (thread is null)
-                {
-                    return ThreadNotFound<ApplyOrganizationResult>(threadId);
-                }
-
-                var normalizedTags = update.Tags?
-                    .Select(ThreadShelfRepository.NormalizeTagName)
-                    .Where(name => name.Length > 0)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
-                    .ToList();
-                var missingTag = normalizedTags?.FirstOrDefault(name => !tagNames.Contains(name));
-                if (missingTag is not null)
-                {
-                    return TagNotFound<ApplyOrganizationResult>(missingTag);
-                }
-
-                updates[thread.Id] = ThreadShelfRepository.MetadataFrom(
-                    new EditDraft(
-                        update.Folder ?? thread.Metadata.Folder,
-                        thread.Metadata.Notes,
-                        thread.Metadata.Favorite),
-                    normalizedTags ?? thread.Metadata.Tags);
-            }
-
-            repository.SaveOrganization(tags, updates);
+            var updates = request.Threads?
+                .Select(update => update is null
+                    ? null!
+                    : new ThreadOrganizationUpdate(update.ThreadId, update.Folder, update.Tags))
+                .ToList();
+            var result = service.ApplyOrganization(request.Tags, updates);
             return Success(
-                new ApplyOrganizationResult(tags.Count, updates.Count),
-                snapshot);
+                new ApplyOrganizationResult(
+                    result.Data.TagsUpserted,
+                    result.Data.ThreadsUpdated),
+                result.Snapshot);
         });
 
     public ThreadShelfCommandResult<ThreadDto> ArchiveThread(NativeThreadRequest request) =>
@@ -572,86 +304,51 @@ public sealed class ThreadShelfCommandService
         SetThreadArchived(request, archived: false);
 
     public ThreadShelfCommandResult<ThreadDto> RenameThread(RenameThreadRequest request) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        WithService(request.CodexHome, service =>
         {
-            if (!snapshot.SupportsNativeActions)
-            {
-                return NativeUnsupported<ThreadDto>(snapshot);
-            }
+            var result = service.RenameThread(request.ThreadId, request.Title);
+            return Success(ToDto(result.Data), result.Snapshot);
+        });
 
-            var title = (request.Title ?? "").Trim();
-            if (title.Length == 0)
-            {
-                return ThreadShelfCommandResult<ThreadDto>.Failure(
-                    "invalid_argument",
-                    "Title is required.");
-            }
-
-            var thread = FindThread(snapshot, request.ThreadId);
-            if (thread is null)
-            {
-                return ThreadNotFound<ThreadDto>(request.ThreadId);
-            }
-
-            try
-            {
-                repository.SetName(thread.Id, title);
-                return ReloadThread(repository, thread.Id);
-            }
-            catch (Exception ex)
-            {
-                return ThreadShelfCommandResult<ThreadDto>.Failure(
-                    "app_server_unavailable",
-                    ex.Message,
-                    retryable: true);
-            }
+    private ThreadShelfCommandResult<ThreadDto> SetThreadTag(
+        ThreadTagRequest request,
+        bool assigned) =>
+        WithService(request.CodexHome, service =>
+        {
+            var result = service.SetThreadTag(request.ThreadId, request.Tag, assigned);
+            return Success(ToDto(result.Data), result.Snapshot);
         });
 
     private ThreadShelfCommandResult<ThreadDto> SetThreadArchived(
         NativeThreadRequest request,
         bool archived) =>
-        WithSnapshot(request.CodexHome, (repository, snapshot) =>
+        WithService(request.CodexHome, service =>
         {
-            if (!snapshot.SupportsNativeActions)
-            {
-                return NativeUnsupported<ThreadDto>(snapshot);
-            }
-
-            var thread = FindThread(snapshot, request.ThreadId);
-            if (thread is null)
-            {
-                return ThreadNotFound<ThreadDto>(request.ThreadId);
-            }
-
-            try
-            {
-                repository.SetArchived(thread.Id, archived);
-                return ReloadThread(repository, thread.Id);
-            }
-            catch (Exception ex)
-            {
-                return ThreadShelfCommandResult<ThreadDto>.Failure(
-                    "app_server_unavailable",
-                    ex.Message,
-                    retryable: true);
-            }
+            var result = service.SetArchived(request.ThreadId, archived);
+            return Success(ToDto(result.Data), result.Snapshot);
         });
 
-    private static ThreadShelfCommandResult<T> WithSnapshot<T>(
+    private ThreadShelfCommandResult<T> WithService<T>(
         string? codexHome,
-        Func<ThreadShelfRepository, ThreadShelfSnapshot, ThreadShelfCommandResult<T>> action)
+        Func<ThreadShelfService, ThreadShelfCommandResult<T>> action)
     {
         try
         {
-            var repository = new ThreadShelfRepository(codexHome);
-            var snapshot = repository.Load();
-            return action(repository, snapshot);
+            var repository = _repositoryFactory(codexHome)
+                ?? throw new InvalidOperationException("Repository factory returned null.");
+            return action(new ThreadShelfService(repository));
+        }
+        catch (ThreadShelfValidationException ex)
+        {
+            return ThreadShelfCommandResult<T>.Failure(
+                ToCommandErrorCode(ex.Code),
+                ex.Message,
+                ex.Details,
+                ex.Retryable);
         }
         catch (UnauthorizedAccessException ex)
         {
-            return ThreadShelfCommandResult<T>.Failure(
-                "permission_denied",
-                ex.Message);
+            return ThreadShelfCommandResult<T>.Failure("permission_denied", ex.Message);
         }
         catch (IOException ex)
         {
@@ -662,69 +359,28 @@ public sealed class ThreadShelfCommandService
         }
         catch (Exception ex)
         {
-            return ThreadShelfCommandResult<T>.Failure(
-                "invalid_argument",
-                ex.Message);
+            return ThreadShelfCommandResult<T>.Failure("invalid_argument", ex.Message);
         }
     }
+
+    private static string ToCommandErrorCode(string serviceCode) =>
+        serviceCode switch
+        {
+            "thread_id_empty" or
+            "metadata_patch_empty" or
+            "tag_name_empty" or
+            "tag_color_invalid" or
+            "thread_title_empty" or
+            "organization_empty" or
+            "organization_tag_null" or
+            "organization_tag_duplicate" or
+            "organization_thread_null" or
+            "organization_thread_duplicate" => "invalid_argument",
+            _ => serviceCode
+        };
 
     private static ThreadShelfCommandResult<T> Success<T>(T data, ThreadShelfSnapshot snapshot) =>
         ThreadShelfCommandResult<T>.Success(data, SourceFrom(snapshot), WarningsFrom(snapshot));
-
-    private static ThreadShelfCommandResult<ThreadDto> SaveMetadataAndReload(
-        ThreadShelfRepository repository,
-        ThreadShelfSnapshot snapshot,
-        string threadId,
-        ThreadMetadata metadata)
-    {
-        try
-        {
-            repository.SaveMetadata(threadId, metadata);
-            return ReloadThread(repository, threadId);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return ThreadShelfCommandResult<ThreadDto>.Failure(
-                "permission_denied",
-                ex.Message);
-        }
-        catch (IOException ex)
-        {
-            return ThreadShelfCommandResult<ThreadDto>.Failure(
-                "sidecar_write_failed",
-                ex.Message,
-                retryable: true);
-        }
-        catch (Exception ex)
-        {
-            return ThreadShelfCommandResult<ThreadDto>.Failure(
-                "sidecar_write_failed",
-                ex.Message);
-        }
-    }
-
-    private static ThreadShelfCommandResult<ThreadDto> ReloadThread(
-        ThreadShelfRepository repository,
-        string threadId)
-    {
-        var reloaded = repository.Load();
-        var updated = FindThread(reloaded, threadId);
-        return updated is null
-            ? ThreadNotFound<ThreadDto>(threadId)
-            : Success(ToDto(updated), reloaded);
-    }
-
-    private static ThreadShelfCommandResult<TagDto> ReloadTag(
-        ThreadShelfRepository repository,
-        string name)
-    {
-        var reloaded = repository.Load();
-        var tag = GetTagDtos(reloaded)
-            .FirstOrDefault(candidate => candidate.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        return tag is null
-            ? TagNotFound<TagDto>(name)
-            : Success(tag, reloaded);
-    }
 
     private static IReadOnlyList<TagDto> GetTagDtos(ThreadShelfSnapshot snapshot) =>
         ThreadFilters.BuildTagSummaries(snapshot.Threads, snapshot.Tags)
@@ -735,35 +391,13 @@ public sealed class ThreadShelfCommandService
                 summary.Count))
             .ToList();
 
-    private static CodexThread? FindThread(ThreadShelfSnapshot snapshot, string threadId) =>
-        snapshot.Threads.FirstOrDefault(thread =>
-            thread.Id.Equals((threadId ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
-
-    private static TagDefinition? FindTag(ThreadShelfSnapshot snapshot, string name) =>
-        snapshot.Tags.FirstOrDefault(tag =>
-            tag.Name.Equals(ThreadShelfRepository.NormalizeTagName(name), StringComparison.OrdinalIgnoreCase));
-
-    private static ThreadShelfCommandResult<T> ThreadNotFound<T>(string threadId) =>
-        ThreadShelfCommandResult<T>.Failure(
-            "thread_not_found",
-            $"Thread '{threadId}' was not found.",
-            new { threadId });
-
-    private static ThreadShelfCommandResult<T> TagNotFound<T>(string name) =>
-        ThreadShelfCommandResult<T>.Failure(
-            "tag_not_found",
-            $"Tag '{name}' was not found.",
-            new { name });
-
-    private static ThreadShelfCommandResult<T> NativeUnsupported<T>(ThreadShelfSnapshot snapshot) =>
-        ThreadShelfCommandResult<T>.Failure(
-            "native_action_unsupported",
-            "Native Codex actions require the Codex CLI app-server provider.",
-            new
-            {
-                provider = SourceFrom(snapshot).Provider,
-                snapshot.CodexHome
-            });
+    private static TagDto ToTagDto(ThreadShelfSnapshot snapshot, TagDefinition tag)
+    {
+        var count = snapshot.Threads.Count(thread =>
+            thread.Metadata.Tags.Any(name =>
+                name.Equals(tag.Name, StringComparison.OrdinalIgnoreCase)));
+        return new TagDto(tag.Name, tag.Color, tag.Description, count);
+    }
 
     private static ThreadDto ToDto(CodexThread thread) =>
         new(

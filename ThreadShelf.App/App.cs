@@ -55,9 +55,9 @@ internal class App : Component
 
     public override Element Render()
     {
-        var repository = UseMemo(() => new ThreadShelfRepository());
+        var threadService = UseMemo(() => new ThreadShelfService(new ThreadShelfRepository()));
         var interactiveLauncher = UseMemo(() => new CodexInteractiveLauncher());
-        var preferenceStore = UseMemo(() => new AppPreferenceStore(repository.CodexHome));
+        var preferenceStore = UseMemo(() => new AppPreferenceStore(threadService.CodexHome));
         var initialLanguage = UseMemo(preferenceStore.LoadLanguagePreference);
         var (languagePreference, setLanguagePreference) = UseState(initialLanguage);
         UiText.ApplyLanguage(languagePreference);
@@ -98,7 +98,7 @@ internal class App : Component
         {
             try
             {
-                var loaded = repository.Load();
+                var loaded = threadService.Load();
                 setSnapshot(loaded);
                 setStatus(DescribeLoad(loaded));
             }
@@ -338,11 +338,11 @@ internal class App : Component
                     return;
                 }
 
-                repository.SaveMetadata(thread.Id, metadata);
-                setSnapshot(snapshot.WithMetadata(thread.Id, metadata));
+                var result = threadService.SaveThreadMetadata(thread.Id, metadata);
+                setSnapshot(result.Snapshot);
                 if (thread.Id.Equals(selectedThread?.Id, StringComparison.OrdinalIgnoreCase))
                 {
-                    setDraft(EditDraft.From(metadata));
+                    setDraft(EditDraft.From(result.Data.Metadata));
                 }
 
                 setStatus(successMessage);
@@ -360,7 +360,12 @@ internal class App : Component
                 return;
             }
 
-            var metadata = ThreadShelfRepository.MetadataFrom(draftToSave, selectedThread.Metadata.Tags);
+            var metadata = selectedThread.Metadata with
+            {
+                Folder = draftToSave.Folder,
+                Notes = draftToSave.Notes,
+                Favorite = draftToSave.Favorite
+            };
             SaveThreadMetadata(selectedThread, metadata, T("MetadataSaved", ThreadTitle(selectedThread)));
         }
 
@@ -378,62 +383,62 @@ internal class App : Component
                 return;
             }
 
-            var targetFolder = (folder ?? "").Trim();
-            var metadata = thread.Metadata with { Folder = targetFolder };
-            var destination = targetFolder.Length == 0 ? T("Unfiled") : targetFolder;
-            SaveThreadMetadata(thread, metadata, T("MovedThread", ThreadTitle(thread), destination));
+            try
+            {
+                var result = threadService.MoveThread(thread.Id, folder);
+                setSnapshot(result.Snapshot);
+                if (thread.Id.Equals(selectedThread?.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    setDraft(EditDraft.From(result.Data.Metadata));
+                }
+
+                var destination = result.Data.Metadata.Folder.Length == 0
+                    ? T("Unfiled")
+                    : result.Data.Metadata.Folder;
+                setStatus(T("MovedThread", ThreadTitle(thread), destination));
+            }
+            catch (Exception ex)
+            {
+                setStatus(T("SaveFailed", ex.Message));
+            }
         }
 
         void ToggleThreadTag(CodexThread thread, TagDefinition tag)
         {
-            var tagName = ThreadShelfRepository.NormalizeTagName(tag.Name);
-            if (tagName.Length == 0)
-            {
-                return;
-            }
-
             var hasTag = thread.Metadata.Tags.Any(name =>
-                name.Equals(tagName, StringComparison.OrdinalIgnoreCase));
-            var nextTags = hasTag
-                ? [.. thread.Metadata.Tags.Where(name => !name.Equals(tagName, StringComparison.OrdinalIgnoreCase))]
-                : thread.Metadata.Tags
-                    .Concat([tagName])
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
-                    .ToList();
+                name.Equals(tag.Name, StringComparison.OrdinalIgnoreCase));
+            try
+            {
+                var result = threadService.SetThreadTag(thread.Id, tag.Name, !hasTag);
+                setSnapshot(result.Snapshot);
+                if (thread.Id.Equals(selectedThread?.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    setDraft(EditDraft.From(result.Data.Metadata));
+                }
 
-            SaveThreadMetadata(
-                thread,
-                thread.Metadata with { Tags = nextTags },
-                hasTag
-                    ? T("RemovedTag", tagName, ThreadTitle(thread))
-                    : T("AddedTag", tagName, ThreadTitle(thread)));
+                setStatus(hasTag
+                    ? T("RemovedTag", tag.Name.Trim(), ThreadTitle(thread))
+                    : T("AddedTag", tag.Name.Trim(), ThreadTitle(thread)));
+            }
+            catch (Exception ex)
+            {
+                setStatus(T("SaveFailed", ex.Message));
+            }
         }
 
         void SaveTagDefinition()
         {
-            var name = ThreadShelfRepository.NormalizeTagName(tagEditor.Name);
-            if (name.Length == 0)
-            {
-                setStatus(T("TagSaveNameEmpty"));
-                return;
-            }
-
-            if (!ThreadShelfRepository.IsValidTagColor(tagEditor.Color))
-            {
-                setStatus(T("TagColorInvalid"));
-                return;
-            }
-
             try
             {
-                var definition = new TagDefinition
-                {
-                    Name = name,
-                    Color = ThreadShelfRepository.NormalizeTagColor(tagEditor.Color),
-                    Description = tagEditor.Description
-                };
-                repository.SaveTagDefinition(tagEditor.EditingName, definition);
+                var result = threadService.SaveTagDefinition(
+                    tagEditor.EditingName,
+                    new TagDefinition
+                    {
+                        Name = tagEditor.Name,
+                        Color = tagEditor.Color,
+                        Description = tagEditor.Description
+                    });
+                var definition = result.Data;
                 if (tagEditor.EditingName.Equals(selectedTag, StringComparison.OrdinalIgnoreCase))
                 {
                     setSelectedTag(definition.Name);
@@ -441,10 +446,18 @@ internal class App : Component
 
                 setPendingDeleteTag("");
                 setTagEditor(TagEditorDraft.Empty);
-                Reload();
+                setSnapshot(result.Snapshot);
                 setStatus(tagEditor.EditingName.Length == 0
                     ? T("AddedTagDefinition", definition.Name)
                     : T("SavedTag", definition.Name));
+            }
+            catch (ThreadShelfValidationException ex) when (ex.Code == "tag_name_empty")
+            {
+                setStatus(T("TagSaveNameEmpty"));
+            }
+            catch (ThreadShelfValidationException ex) when (ex.Code == "tag_color_invalid")
+            {
+                setStatus(T("TagColorInvalid"));
             }
             catch (Exception ex)
             {
@@ -454,16 +467,10 @@ internal class App : Component
 
         void DeleteTagDefinition(string name)
         {
-            var tagName = ThreadShelfRepository.NormalizeTagName(name);
-            if (tagName.Length == 0)
-            {
-                setStatus(T("TagDeleteNameEmpty"));
-                return;
-            }
-
             try
             {
-                repository.DeleteTagDefinition(tagName);
+                var result = threadService.DeleteTag(name);
+                var tagName = result.Data;
                 if (tagName.Equals(selectedTag, StringComparison.OrdinalIgnoreCase))
                 {
                     setSelectedTag("");
@@ -475,8 +482,12 @@ internal class App : Component
                 }
 
                 setPendingDeleteTag("");
-                Reload();
+                setSnapshot(result.Snapshot);
                 setStatus(T("DeletedTag", tagName));
+            }
+            catch (ThreadShelfValidationException ex) when (ex.Code == "tag_name_empty")
+            {
+                setStatus(T("TagDeleteNameEmpty"));
             }
             catch (Exception ex)
             {
@@ -499,12 +510,8 @@ internal class App : Component
 
             try
             {
-                var loaded = await Task.Run(() =>
-                {
-                    repository.SetArchived(thread.Id, archived);
-                    return repository.Load();
-                });
-                setSnapshot(loaded);
+                var result = await Task.Run(() => threadService.SetArchived(thread.Id, archived));
+                setSnapshot(result.Snapshot);
                 setStatus(archived
                     ? T("ArchivedThread", ThreadTitle(thread))
                     : T("UnarchivedThread", ThreadTitle(thread)));
@@ -522,18 +529,15 @@ internal class App : Component
 
         void RenameThread(CodexThread thread, string name)
         {
-            var trimmed = (name ?? "").Trim();
-            if (trimmed.Length == 0)
-            {
-                setStatus(T("RenameTitleEmpty"));
-                return;
-            }
-
             try
             {
-                repository.SetName(thread.Id, trimmed);
-                Reload();
-                setStatus(T("RenamedThread", trimmed));
+                var result = threadService.RenameThread(thread.Id, name);
+                setSnapshot(result.Snapshot);
+                setStatus(T("RenamedThread", result.Data.Title));
+            }
+            catch (ThreadShelfValidationException ex) when (ex.Code == "thread_title_empty")
+            {
+                setStatus(T("RenameTitleEmpty"));
             }
             catch (Exception ex)
             {
@@ -552,23 +556,22 @@ internal class App : Component
             {
                 if (rename.Kind == RenameTargetKind.Project)
                 {
-                    repository.RenameProjectAlias(rename.Key, rename.Value, snapshot.Threads);
-                    Reload();
+                    var result = threadService.RenameProjectAlias(rename.Key, rename.Value);
+                    setSnapshot(result.Snapshot);
                     setStatus(T("ProjectAliasRenamed", rename.CurrentName, rename.Value.Trim()));
                 }
                 else
                 {
-                    repository.RenameFolder(
+                    var result = threadService.RenameFolder(
                         selectedProject,
                         rename.Key,
-                        rename.Value,
-                        snapshot.Threads);
+                        rename.Value);
                     if (selectedFilter.Equals(rename.Key, StringComparison.OrdinalIgnoreCase))
                     {
                         setSelectedFilter(rename.Value.Trim());
                     }
 
-                    Reload();
+                    setSnapshot(result.Snapshot);
                     setStatus(T("FolderRenamed", rename.CurrentName, rename.Value.Trim()));
                 }
             }

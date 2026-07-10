@@ -93,9 +93,24 @@ public sealed record EditDraft(string Folder, string Notes, bool Favorite)
         new(metadata.Folder, metadata.Notes, metadata.Favorite);
 }
 
-public sealed class ThreadShelfValidationException(string code, string message) : InvalidOperationException(message)
+public sealed class ThreadShelfValidationException : InvalidOperationException
 {
-    public string Code { get; } = code;
+    public ThreadShelfValidationException(
+        string code,
+        string message,
+        object? details = null,
+        bool retryable = false,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+        Code = code;
+        Details = details;
+        Retryable = retryable;
+    }
+
+    public string Code { get; }
+    public object? Details { get; }
+    public bool Retryable { get; }
 }
 
 public static class ThreadFilters
@@ -330,7 +345,7 @@ public static class ThreadFilters
     }
 }
 
-public sealed class ThreadShelfRepository
+public sealed class ThreadShelfRepository : IThreadShelfRepository
 {
     private static readonly Regex SessionIdRegex = new(
         "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
