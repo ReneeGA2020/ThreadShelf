@@ -114,3 +114,8 @@ For UI selection, drag/drop, tags, context menus, localization, or save timing, 
 - For drag input, normalize against virtual-screen metrics, move in small steps, hover briefly, then release.
 - Verify sidecar contents after writes and hash Codex JSONL when testing fallback safety.
 - Confirm no `ThreadShelf` test process remains and no ignored build artifacts appear in `git status --short`.
+
+## Git publishing and handoff
+
+- After finishing branch-based work, switch the local checkout back to the repository's default branch once requested commits, pushes, PR creation, and issue updates have succeeded. Stay on the work branch only when the user explicitly asks.
+- Require a clean worktree before switching. Never discard or hide unrelated changes to satisfy this cleanup rule, and verify the final branch with `git status -sb`.
