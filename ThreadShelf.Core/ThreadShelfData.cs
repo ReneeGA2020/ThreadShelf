@@ -44,7 +44,7 @@ public sealed record CodexThread
 
     public string DisplayFolder => string.IsNullOrWhiteSpace(Metadata.Folder) ? "Unfiled" : Metadata.Folder.Trim();
     public string DisplayTitle => string.IsNullOrWhiteSpace(Title) ? "(Untitled thread)" : Title.Trim();
-    public string UpdatedLocal => UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.CurrentCulture);
+    public string UpdatedLocal => UpdatedAt.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
     public string TagsText => Metadata.Tags.Count == 0 ? "" : string.Join(", ", Metadata.Tags);
 }
 
@@ -52,11 +52,14 @@ public sealed record ThreadShelfSnapshot
 {
     public IReadOnlyList<CodexThread> Threads { get; init; } = [];
     public IReadOnlyList<TagDefinition> Tags { get; init; } = [];
+    public IReadOnlyDictionary<string, string> ProjectAliases { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     public string CodexHome { get; init; } = "";
     public string SidecarPath { get; init; } = "";
     public string DataSource { get; init; } = "";
     public string LoadWarning { get; init; } = "";
     public bool SupportsNativeActions { get; init; }
+    public bool SupportsNativeProjectRename { get; init; }
     public DateTimeOffset LoadedAt { get; init; } = DateTimeOffset.Now;
 
     public ThreadShelfSnapshot WithMetadata(string threadId, ThreadMetadata metadata) =>
@@ -90,9 +93,16 @@ public sealed record EditDraft(string Folder, string Notes, bool Favorite)
         new(metadata.Folder, metadata.Notes, metadata.Favorite);
 }
 
+public sealed class ThreadShelfValidationException(string code, string message) : InvalidOperationException(message)
+{
+    public string Code { get; } = code;
+}
+
 public static class ThreadFilters
 {
     public const string All = "__all";
+    public const string Active = "__active";
+    public const string Archived = "__archived";
     public const string Favorites = "__favorites";
     public const string Unfiled = "__unfiled";
     public const string AllProjects = "__all_projects";
@@ -110,7 +120,8 @@ public static class ThreadFilters
         string selectedProject,
         string selectedFolder,
         string query,
-        string selectedTag)
+        string selectedTag,
+        IReadOnlyDictionary<string, string>? projectAliases = null)
     {
         var terms = (query ?? "")
             .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -119,7 +130,7 @@ public static class ThreadFilters
             .Where(thread => MatchesProject(thread, selectedProject))
             .Where(thread => MatchesFolder(thread, selectedFolder))
             .Where(thread => MatchesTag(thread, selectedTag))
-            .Where(thread => terms.All(term => MatchesTerm(thread, term)))
+            .Where(thread => terms.All(term => MatchesTerm(thread, term, projectAliases)))
             .OrderByDescending(thread => thread.UpdatedAt)
             .ToList();
     }
@@ -131,7 +142,9 @@ public static class ThreadFilters
             .Where(thread => MatchesProject(thread, selectedProject))
             .ToList();
 
-    public static IReadOnlyList<ProjectSummary> BuildProjectSummaries(IReadOnlyList<CodexThread> threads)
+    public static IReadOnlyList<ProjectSummary> BuildProjectSummaries(
+        IReadOnlyList<CodexThread> threads,
+        IReadOnlyDictionary<string, string>? projectAliases = null)
     {
         var projects = threads
             .Where(thread => NormalizeProjectKey(thread.Workspace).Length > 0)
@@ -140,7 +153,7 @@ public static class ThreadFilters
             {
                 Key = group.Key,
                 Workspace = group.First().Workspace.Trim(),
-                BaseName = ProjectNameForWorkspace(group.Key),
+                BaseName = ProjectDisplayNameForWorkspace(group.Key, projectAliases),
                 ParentName = ProjectParentNameForWorkspace(group.Key),
                 Count = group.Count()
             })
@@ -210,6 +223,8 @@ public static class ThreadFilters
         filter switch
         {
             All => "All",
+            Active => "Unarchived",
+            Archived => "Archived",
             Favorites => "Favorites",
             Unfiled => "Unfiled",
             _ => filter
@@ -235,6 +250,19 @@ public static class ThreadFilters
         return separatorIndex >= 0 && separatorIndex < normalized.Length - 1
             ? normalized[(separatorIndex + 1)..]
             : normalized;
+    }
+
+    public static string ProjectDisplayNameForWorkspace(
+        string? workspace,
+        IReadOnlyDictionary<string, string>? projectAliases)
+    {
+        var key = NormalizeProjectKey(workspace);
+        return key.Length > 0
+            && projectAliases is not null
+            && projectAliases.TryGetValue(key, out var alias)
+            && !string.IsNullOrWhiteSpace(alias)
+                ? alias.Trim()
+                : ProjectNameForWorkspace(workspace);
     }
 
     private static string ProjectParentNameForWorkspace(string? workspace)
@@ -267,6 +295,8 @@ public static class ThreadFilters
         selectedFolder switch
         {
             All => true,
+            Active => !thread.IsArchived,
+            Archived => thread.IsArchived,
             Favorites => thread.Metadata.Favorite,
             Unfiled => string.IsNullOrWhiteSpace(thread.Metadata.Folder),
             _ => thread.DisplayFolder.Equals(selectedFolder, StringComparison.OrdinalIgnoreCase)
@@ -276,7 +306,10 @@ public static class ThreadFilters
         string.IsNullOrWhiteSpace(selectedTag)
         || thread.Metadata.Tags.Any(tag => tag.Equals(selectedTag.Trim(), StringComparison.OrdinalIgnoreCase));
 
-    private static bool MatchesTerm(CodexThread thread, string term)
+    private static bool MatchesTerm(
+        CodexThread thread,
+        string term,
+        IReadOnlyDictionary<string, string>? projectAliases)
     {
         var fields = new[]
         {
@@ -286,10 +319,11 @@ public static class ThreadFilters
             thread.TagsText,
             thread.Metadata.Notes,
             thread.Workspace,
+            ProjectDisplayNameForWorkspace(thread.Workspace, projectAliases),
             thread.Originator,
             thread.Source,
             thread.Model,
-            thread.IsArchived ? "archived" : "active"
+            thread.IsArchived ? "archived" : "unarchived active"
         };
 
         return fields.Any(field => field?.Contains(term, StringComparison.CurrentCultureIgnoreCase) == true);
@@ -355,10 +389,12 @@ public sealed class ThreadShelfRepository
         {
             Threads = threads,
             Tags = BuildTagDefinitions(sidecar, threads),
+            ProjectAliases = sidecar.ProjectAliases,
             CodexHome = CodexHome,
             SidecarPath = SidecarPath,
             DataSource = "Codex CLI app-server",
             SupportsNativeActions = true,
+            SupportsNativeProjectRename = false,
             LoadedAt = DateTimeOffset.Now
         };
     }
@@ -422,11 +458,13 @@ public sealed class ThreadShelfRepository
         {
             Threads = threads.OrderByDescending(thread => thread.UpdatedAt).ToList(),
             Tags = BuildTagDefinitions(sidecar, threads),
+            ProjectAliases = sidecar.ProjectAliases,
             CodexHome = CodexHome,
             SidecarPath = SidecarPath,
             DataSource = "local JSONL files",
             LoadWarning = loadWarning,
             SupportsNativeActions = false,
+            SupportsNativeProjectRename = false,
             LoadedAt = DateTimeOffset.Now
         };
     }
@@ -523,6 +561,95 @@ public sealed class ThreadShelfRepository
                     .Where(tag => !tag.Equals(normalizedName, StringComparison.OrdinalIgnoreCase))
                     .ToList(),
                 UpdatedAt = DateTimeOffset.UtcNow
+            });
+        }
+
+        SaveSidecar(document);
+    }
+
+    public void RenameProjectAlias(
+        string projectKey,
+        string newName,
+        IReadOnlyList<CodexThread> threads)
+    {
+        var normalizedKey = ThreadFilters.NormalizeProjectKey(projectKey);
+        var trimmedName = (newName ?? "").Trim();
+        if (trimmedName.Length == 0)
+        {
+            throw new ThreadShelfValidationException("rename_name_empty", "Name cannot be empty.");
+        }
+
+        var projectKeys = threads
+            .Select(thread => ThreadFilters.NormalizeProjectKey(thread.Workspace))
+            .Where(key => key.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedKey.Length == 0
+            || !projectKeys.Contains(normalizedKey, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new ThreadShelfValidationException("project_not_found", "Project was not found.");
+        }
+
+        var document = LoadSidecar();
+        foreach (var otherKey in projectKeys.Where(key => !key.Equals(normalizedKey, StringComparison.OrdinalIgnoreCase)))
+        {
+            var otherName = ThreadFilters.ProjectDisplayNameForWorkspace(otherKey, document.ProjectAliases);
+            if (trimmedName.Equals(otherName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ThreadShelfValidationException("rename_name_conflict", "A project with that name already exists.");
+            }
+        }
+
+        document.ProjectAliases[normalizedKey] = trimmedName;
+        SaveSidecar(document);
+    }
+
+    public void RenameFolder(
+        string projectKey,
+        string oldName,
+        string newName,
+        IReadOnlyList<CodexThread> threads)
+    {
+        var normalizedOldName = (oldName ?? "").Trim();
+        var trimmedNewName = (newName ?? "").Trim();
+        if (trimmedNewName.Length == 0)
+        {
+            throw new ThreadShelfValidationException("rename_name_empty", "Name cannot be empty.");
+        }
+
+        var projectThreads = ThreadFilters.FilterByProject(threads, projectKey);
+        var affected = projectThreads
+            .Where(thread => thread.Metadata.Folder.Trim().Equals(
+                normalizedOldName,
+                StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (normalizedOldName.Length == 0 || affected.Length == 0)
+        {
+            throw new ThreadShelfValidationException("folder_not_found", "Folder was not found in this project.");
+        }
+
+        var conflicts = projectThreads.Any(thread =>
+            !thread.Metadata.Folder.Trim().Equals(normalizedOldName, StringComparison.OrdinalIgnoreCase)
+            && thread.Metadata.Folder.Trim().Equals(trimmedNewName, StringComparison.OrdinalIgnoreCase));
+        if (conflicts)
+        {
+            throw new ThreadShelfValidationException("rename_name_conflict", "A folder with that name already exists in this project.");
+        }
+
+        if (normalizedOldName.Equals(trimmedNewName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var document = LoadSidecar();
+        var updatedAt = DateTimeOffset.UtcNow;
+        foreach (var thread in affected)
+        {
+            var metadata = document.Threads.GetValueOrDefault(thread.Id) ?? thread.Metadata;
+            document.Threads[thread.Id] = Normalize(metadata with
+            {
+                Folder = trimmedNewName,
+                UpdatedAt = updatedAt
             });
         }
 
@@ -788,7 +915,7 @@ public sealed class ThreadShelfRepository
     {
         var normalized = new ThreadShelfDocument
         {
-            Version = Math.Max(document.Version, 2)
+            Version = Math.Max(document.Version, 3)
         };
 
         foreach (var (threadId, metadata) in document.Threads ?? new Dictionary<string, ThreadMetadata>())
@@ -811,6 +938,16 @@ public sealed class ThreadShelfRepository
             if (definition.Name.Length > 0)
             {
                 normalized.Tags[definition.Name] = definition;
+            }
+        }
+
+        foreach (var (workspace, alias) in document.ProjectAliases ?? new Dictionary<string, string>())
+        {
+            var normalizedWorkspace = ThreadFilters.NormalizeProjectKey(workspace);
+            var normalizedAlias = (alias ?? "").Trim();
+            if (normalizedWorkspace.Length > 0 && normalizedAlias.Length > 0)
+            {
+                normalized.ProjectAliases[normalizedWorkspace] = normalizedAlias;
             }
         }
 
@@ -904,8 +1041,9 @@ public sealed class ThreadShelfRepository
 
     private sealed class ThreadShelfDocument
     {
-        public int Version { get; set; } = 2;
+        public int Version { get; set; } = 3;
         public Dictionary<string, ThreadMetadata> Threads { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, TagDefinition> Tags { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> ProjectAliases { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }

@@ -94,32 +94,19 @@ public sealed class CodexAppServerClient : IDisposable
     {
         var startInfo = new ProcessStartInfo
         {
-            FileName = ResolveCodexCliExecutable(),
-            Arguments = "app-server",
+            FileName = CodexCliLocator.ResolveExecutable(),
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        startInfo.ArgumentList.Add("app-server");
 
         var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Failed to start Codex CLI app-server.");
 
         return new CodexAppServerClient(process);
-    }
-
-    private static string ResolveCodexCliExecutable()
-    {
-        var configuredPath = Environment.GetEnvironmentVariable("THREADSHELF_CODEX_CLI");
-        if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
-        {
-            return configuredPath;
-        }
-
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var windowsCliInstall = Path.Combine(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
-        return File.Exists(windowsCliInstall) ? windowsCliInstall : "codex";
     }
 
     private string Initialize()

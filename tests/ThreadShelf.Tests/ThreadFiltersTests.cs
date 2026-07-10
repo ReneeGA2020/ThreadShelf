@@ -75,6 +75,62 @@ public sealed class ThreadFiltersTests
         Assert.Equal([noProjectThread], ThreadFilters.FilterByProject(threads, ThreadFilters.NoProject));
     }
 
+    [Fact]
+    public void Apply_FiltersArchivedAndUnarchivedThreadsByStableKeys()
+    {
+        var unarchived = Thread("active", @"E:\Work\Alpha", "Planning");
+        var archived = Thread("archived", @"E:\Work\Alpha", "Planning") with { IsArchived = true };
+        var threads = new[] { unarchived, archived };
+
+        Assert.Equal(
+            [unarchived],
+            ThreadFilters.Apply(threads, ThreadFilters.AllProjects, ThreadFilters.Active, "", ""));
+        Assert.Equal(
+            [archived],
+            ThreadFilters.Apply(threads, ThreadFilters.AllProjects, ThreadFilters.Archived, "", ""));
+        Assert.Equal("Unarchived", ThreadFilters.LabelForFilter(ThreadFilters.Active));
+        Assert.Equal("Archived", ThreadFilters.LabelForFilter(ThreadFilters.Archived));
+    }
+
+    [Theory]
+    [InlineData(false, "unarchived")]
+    [InlineData(false, "active")]
+    [InlineData(true, "archived")]
+    public void Apply_SearchesThreadArchiveState(bool isArchived, string query)
+    {
+        var thread = Thread("thread", @"E:\Work\Alpha", "Planning") with { IsArchived = isArchived };
+
+        Assert.Equal(
+            [thread],
+            ThreadFilters.Apply([thread], ThreadFilters.AllProjects, ThreadFilters.All, query, ""));
+    }
+
+    [Fact]
+    public void ProjectAliases_AppearInSummariesAndSearchWithoutChangingProjectKeys()
+    {
+        var alpha = Thread("alpha", @"E:\Work\Alpha", "Planning", "Prepare release");
+        var beta = Thread("beta", @"E:\Work\Beta", "Planning", "Review release");
+        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [@"E:\Work\Alpha"] = "Client Portal"
+        };
+
+        var projects = ThreadFilters.BuildProjectSummaries([alpha, beta], aliases);
+        var aliased = Assert.Single(projects, project => project.Key == @"E:\Work\Alpha");
+        Assert.Equal("Client Portal", aliased.Name);
+        Assert.Equal(@"E:\Work\Alpha", aliased.Key);
+
+        Assert.Equal(
+            [alpha],
+            ThreadFilters.Apply(
+                [alpha, beta],
+                ThreadFilters.AllProjects,
+                ThreadFilters.All,
+                "portal",
+                "",
+                aliases));
+    }
+
     private static CodexThread Thread(string id, string workspace, string folder, string? title = null) =>
         new()
         {
