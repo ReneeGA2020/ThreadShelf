@@ -13,8 +13,10 @@ it keeps its own sidecar index.
   `sessions`, and `archived_sessions` if the CLI app-server cannot be started.
 - Stores ThreadShelf metadata in
   `~/.codex/threadshelf/threadshelf.json`.
-- Supports folder filters, drag-to-folder moves, favorites, global colored tags
-  with descriptions, a dedicated tag manager, tag/note search, native
+- Organizes the left navigation in two levels: Codex projects derived from each
+  thread workspace, then ThreadShelf folders scoped to the selected project.
+  It also supports drag-to-folder moves, favorites, global colored tags with
+  descriptions, a dedicated tag manager, tag/note search, native
   archive/unarchive and rename through the CLI app-server, and
   `codex://threads/{id}` deep links back into the Codex app.
 - Includes a reusable `ThreadShelf.Core` command surface plus `ThreadShelf.Cli`

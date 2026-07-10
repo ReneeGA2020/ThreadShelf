@@ -30,6 +30,7 @@ internal class App : Component
     private const string TagsPage = "tags";
 
     private sealed record ThreadDragPayload(string ThreadId);
+    private sealed record PendingProjectSelection(string Project, string Folder, string TargetThreadId);
     private sealed record TagEditorDraft(string EditingName, string Name, string Color, string Description)
     {
         public static TagEditorDraft Empty { get; } = new("", "", TagDefinition.DefaultColor, "");
@@ -39,6 +40,7 @@ internal class App : Component
     {
         var repository = UseMemo(() => new ThreadShelfRepository());
         var (snapshot, setSnapshot) = UseState<ThreadShelfSnapshot?>(null);
+        var (selectedProject, setSelectedProject) = UseState(ThreadFilters.AllProjects);
         var (selectedFilter, setSelectedFilter) = UseState(ThreadFilters.All);
         var (selectedTag, setSelectedTag) = UseState("");
         var (query, setQuery) = UseState("");
@@ -48,6 +50,7 @@ internal class App : Component
         var (tagEditor, updateTagEditor) = UseReducer<TagEditorDraft>(TagEditorDraft.Empty);
         var (activePage, setActivePage) = UseState(ThreadsPage);
         var (pendingDeleteTag, setPendingDeleteTag) = UseState("");
+        var (pendingProject, setPendingProject) = UseState<PendingProjectSelection?>(null);
         var (status, setStatus) = UseState("");
         var snapshotVersion = snapshot?.LoadedAt.UtcTicks ?? 0L;
 
@@ -122,13 +125,10 @@ internal class App : Component
 
         var threads = snapshot?.Threads ?? [];
         var tags = snapshot?.Tags ?? [];
-        var filtered = ThreadFilters.Apply(threads, selectedFilter, query, selectedTag);
+        var filtered = ThreadFilters.Apply(threads, selectedProject, selectedFilter, query, selectedTag);
         var selectedThread = filtered.FirstOrDefault(thread =>
                 thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
-            ?? (filtered.Count > 0 ? filtered[0] : null)
-            ?? threads.FirstOrDefault(thread =>
-                thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
-            ?? (threads.Count > 0 ? threads[0] : null);
+            ?? (filtered.Count > 0 ? filtered[0] : null);
         var activeDraft = selectedThread is null
             ? null
             : selectedThread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase)
@@ -144,6 +144,19 @@ internal class App : Component
             }
         }, snapshotVersion, selectedTag);
 
+        UseEffect(() =>
+        {
+            if (selectedProject is ThreadFilters.AllProjects or ThreadFilters.NoProject
+                || threads.Any(thread => ThreadFilters.NormalizeProjectKey(thread.Workspace).Equals(
+                    ThreadFilters.NormalizeProjectKey(selectedProject),
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            setSelectedProject(ThreadFilters.AllProjects);
+        }, snapshotVersion, selectedProject);
+
         void SelectThread(CodexThread thread)
         {
             setSelectedId(thread.Id);
@@ -153,8 +166,28 @@ internal class App : Component
 
         UseEffect(() =>
         {
+            if (pendingProject is null
+                || pendingProject.TargetThreadId.Length > 0
+                && !pendingProject.TargetThreadId.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            setSelectedProject(pendingProject.Project);
+            setSelectedFilter(pendingProject.Folder);
+            setActivePage(ThreadsPage);
+            setPendingProject(null);
+        },
+        pendingProject?.Project ?? "",
+        pendingProject?.Folder ?? "",
+        pendingProject?.TargetThreadId ?? "",
+        selectedId);
+
+        UseEffect(() =>
+        {
             if (snapshot is null
                 || !activePage.Equals(ThreadsPage, StringComparison.OrdinalIgnoreCase)
+                || pendingProject is not null
                 || filtered.Count == 0
                 || filtered.Any(thread => thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase)))
             {
@@ -162,13 +195,48 @@ internal class App : Component
             }
 
             SelectThread(filtered[0]);
-        }, snapshotVersion, selectedFilter, selectedTag, query, selectedId, activePage);
+        },
+        snapshotVersion,
+        selectedProject,
+        selectedFilter,
+        selectedTag,
+        query,
+        selectedId,
+        activePage,
+        pendingProject?.TargetThreadId ?? "");
+
+        void SelectProject(string project)
+        {
+            var projectThreads = ThreadFilters.FilterByProject(threads, project);
+            var folderStillExists = selectedFilter is ThreadFilters.All
+                or ThreadFilters.Favorites
+                or ThreadFilters.Unfiled
+                || projectThreads.Any(thread => thread.DisplayFolder.Equals(
+                    selectedFilter,
+                    StringComparison.OrdinalIgnoreCase));
+            var nextFilter = folderStillExists ? selectedFilter : ThreadFilters.All;
+            var matches = ThreadFilters.Apply(threads, project, nextFilter, query, selectedTag);
+            var nextThread = matches.Count > 0 ? matches[0] : null;
+
+            // Stage selection before narrowing the list. Reactor preview.11 can retain
+            // stale pooled resource keys during a same-pass remount (upstream #675).
+            // This may be removable after ThreadShelf picks up the published fix.
+            setPendingProject(new PendingProjectSelection(
+                project,
+                nextFilter,
+                nextThread?.Id ?? ""));
+            if (nextThread is not null
+                && !nextThread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectThread(nextThread);
+            }
+        }
 
         void SelectFilter(string filter)
         {
             setSelectedFilter(filter);
             setActivePage(ThreadsPage);
-            var matches = ThreadFilters.Apply(threads, filter, query, selectedTag);
+            var matches = ThreadFilters.Apply(threads, selectedProject, filter, query, selectedTag);
             var next = matches.Count > 0 ? matches[0] : null;
             if (next is not null)
             {
@@ -180,7 +248,7 @@ internal class App : Component
         {
             setSelectedTag(tag);
             setActivePage(ThreadsPage);
-            var matches = ThreadFilters.Apply(threads, selectedFilter, query, tag);
+            var matches = ThreadFilters.Apply(threads, selectedProject, selectedFilter, query, tag);
             var next = matches.Count > 0 ? matches[0] : null;
             if (next is not null)
             {
@@ -419,6 +487,8 @@ internal class App : Component
                 activePage,
                 ShowThreads,
                 ShowTagManager,
+                selectedProject,
+                SelectProject,
                 selectedFilter,
                 SelectFilter,
                 selectedTag,
@@ -508,6 +578,8 @@ internal class App : Component
         string activePage,
         Action showThreads,
         Action showTagManager,
+        string selectedProject,
+        Action<string> selectProject,
         string selectedFilter,
         Action<string> selectFilter,
         string selectedTag,
@@ -515,10 +587,27 @@ internal class App : Component
         Action<ThreadDragPayload, string> moveThreadToFolder,
         string sidecarPath)
     {
-        var folders = ThreadFilters.BuildFolderSummaries(threads);
-        var tagSummaries = ThreadFilters.BuildTagSummaries(threads, tags);
-        var favoriteCount = threads.Count(thread => thread.Metadata.Favorite);
-        var unfiledCount = threads.Count(thread => string.IsNullOrWhiteSpace(thread.Metadata.Folder));
+        var projects = ThreadFilters.BuildProjectSummaries(threads);
+        var projectThreads = ThreadFilters.FilterByProject(threads, selectedProject);
+        var folders = ThreadFilters.BuildFolderSummaries(projectThreads);
+        var folderThreads = ThreadFilters.Apply(projectThreads, selectedFilter, "", "");
+        var tagSummaries = ThreadFilters.BuildTagSummaries(folderThreads, tags);
+        var favoriteCount = projectThreads.Count(thread => thread.Metadata.Favorite);
+        var unfiledCount = projectThreads.Count(thread => string.IsNullOrWhiteSpace(thread.Metadata.Folder));
+        var noProjectCount = threads.Count(thread =>
+            ThreadFilters.NormalizeProjectKey(thread.Workspace).Length == 0);
+
+        var projectButtons = projects
+            .Select(project => ProjectFilterButton(project, selectedProject, selectProject))
+            .ToArray();
+        Element[] noProjectButtons = noProjectCount > 0
+            ? [ProjectFilterButton(
+                ThreadFilters.NoProject,
+                $"No project ({noProjectCount:N0})",
+                "Threads without a workspace",
+                selectedProject,
+                selectProject)]
+            : [];
 
         var folderButtons = folders
             .Select(folder => FilterButton(
@@ -542,26 +631,43 @@ internal class App : Component
                     PageButton(TagsPage, "Tag manager", activePage, showTagManager)
                         .AutomationId("View_TagManager"),
                     Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 8, 0, 4),
-                    BodyStrong("Folders").Flex(shrink: 0),
-                    FilterButton(ThreadFilters.All, $"All ({threads.Count:N0})", selectedFilter, selectFilter)
-                        .AutomationId("Filter_All"),
-                    FilterButton(ThreadFilters.Favorites, $"Favorites ({favoriteCount:N0})", selectedFilter, selectFilter)
-                        .AutomationId("Filter_Favorites"),
-                    FilterButton(
-                        ThreadFilters.Unfiled,
-                        $"Unfiled ({unfiledCount:N0})",
-                        selectedFilter,
-                        selectFilter,
-                        payload => moveThreadToFolder(payload, ""),
-                        "Move to Unfiled")
-                        .AutomationId("Filter_Unfiled"),
-                    Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 8, 0, 4),
                     ScrollViewer(
                         FlexColumn(
-                            [.. folderButtons,
+                            [BodyStrong("Projects"),
+                            ProjectFilterButton(
+                                ThreadFilters.AllProjects,
+                                $"All projects ({threads.Count:N0})",
+                                "All Codex workspaces",
+                                selectedProject,
+                                selectProject),
+                            .. projectButtons,
+                            .. noProjectButtons,
+                            Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 10, 0, 6),
+                            BodyStrong("Folders"),
+                            FilterButton(
+                                ThreadFilters.All,
+                                $"All threads ({projectThreads.Count:N0})",
+                                selectedFilter,
+                                selectFilter)
+                                .AutomationId("Filter_All"),
+                            FilterButton(
+                                ThreadFilters.Favorites,
+                                $"Favorites ({favoriteCount:N0})",
+                                selectedFilter,
+                                selectFilter)
+                                .AutomationId("Filter_Favorites"),
+                            FilterButton(
+                                ThreadFilters.Unfiled,
+                                $"Unfiled ({unfiledCount:N0})",
+                                selectedFilter,
+                                selectFilter,
+                                payload => moveThreadToFolder(payload, ""),
+                                "Move to Unfiled")
+                                .AutomationId("Filter_Unfiled"),
+                            .. folderButtons,
                             Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 10, 0, 6),
                             BodyStrong("Tags"),
-                            TagFilterButton(null, threads.Count, selectedTag, selectTag),
+                            TagFilterButton(null, folderThreads.Count, selectedTag, selectTag),
                             .. tagButtons]) with
                         {
                             RowGap = 6
@@ -579,7 +685,7 @@ internal class App : Component
             .CornerRadius(8)
             .Background(Theme.LayerFill)
             .WithBorder(Theme.CardStroke, 1)
-            .Flex(basis: 230, shrink: 0);
+            .Flex(basis: 260, shrink: 0);
     }
 
     private static ButtonElement PageButton(
@@ -702,6 +808,39 @@ internal class App : Component
             : button
                 .OnDrop((ThreadDragPayload payload) => dropThread(payload), DragOperations.Move)
                 .OnDragOver(args => args.UIOverride.Caption = dropCaption);
+    }
+
+    private static ButtonElement ProjectFilterButton(
+        ProjectSummary project,
+        string selectedProject,
+        Action<string> selectProject) =>
+        ProjectFilterButton(
+            project.Key,
+            $"{project.Name} ({project.Count:N0})",
+            project.Workspace,
+            selectedProject,
+            selectProject);
+
+    private static ButtonElement ProjectFilterButton(
+        string value,
+        string label,
+        string tooltip,
+        string selectedProject,
+        Action<string> selectProject)
+    {
+        var automationToken = value switch
+        {
+            ThreadFilters.AllProjects => "All",
+            ThreadFilters.NoProject => "NoProject",
+            _ => AutomationToken(value)
+        };
+        var selected = value.Equals(selectedProject, StringComparison.OrdinalIgnoreCase);
+
+        return FilterButton(value, label, selectedProject, selectProject)
+            .AutomationName($"Project {label}")
+            .AutomationId($"Project_{automationToken}")
+            .ToolTip(tooltip)
+            .WithKey($"project-{automationToken}-{(selected ? "selected" : "normal")}");
     }
 
     private static ButtonElement TagFilterButton(
@@ -837,7 +976,7 @@ internal class App : Component
         return Border(
                 FlexColumn(
                     FlexRow(
-                        TextBox(query, setQuery, placeholderText: "Search title, folder, tag, note, id")
+                        TextBox(query, setQuery, placeholderText: "Search title, project, folder, tag, note, id")
                             .AutomationName("Thread search")
                             .AutomationId("ThreadSearchBox")
                             .Flex(grow: 1, basis: 0),
@@ -863,7 +1002,7 @@ internal class App : Component
                         () => Border(
                                 FlexColumn(
                                     BodyLarge("No matching threads"),
-                                    Caption("Clear the search or select another folder.").Foreground(Theme.SecondaryText))
+                                    Caption("Clear the search or select another project or folder.").Foreground(Theme.SecondaryText))
                                 with
                                 {
                                     RowGap = 8,
@@ -894,6 +1033,7 @@ internal class App : Component
         var status = thread.IsArchived ? "Archived" : "Active";
         var source = string.IsNullOrWhiteSpace(thread.Source) ? thread.Originator : thread.Source;
         var location = string.IsNullOrWhiteSpace(thread.Workspace) ? source : thread.Workspace;
+        var projectName = ThreadFilters.ProjectNameForWorkspace(thread.Workspace);
         var visibleTags = thread.Metadata.Tags.Take(4).ToArray();
         var hiddenTagCount = Math.Max(0, thread.Metadata.Tags.Count - visibleTags.Length);
 
@@ -925,6 +1065,9 @@ internal class App : Component
                     },
                     FlexRow(
                         Caption(thread.UpdatedLocal).Foreground(Theme.SecondaryText),
+                        Caption(projectName)
+                            .ToolTip(string.IsNullOrWhiteSpace(thread.Workspace) ? "No Codex workspace" : thread.Workspace)
+                            .Foreground(Theme.SecondaryText),
                         Caption(thread.DisplayFolder).Foreground(Theme.SecondaryText),
                         If(thread.Metadata.Favorite, () => Caption("Favorite").Foreground(Theme.SystemAttention), () => Empty()))
                     with

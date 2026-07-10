@@ -81,6 +81,7 @@ public sealed record ThreadShelfSnapshot
 }
 
 public sealed record FolderSummary(string Name, int Count);
+public sealed record ProjectSummary(string Key, string Name, string Workspace, int Count);
 public sealed record TagSummary(TagDefinition Definition, int Count);
 
 public sealed record EditDraft(string Folder, string Notes, bool Favorite)
@@ -94,9 +95,19 @@ public static class ThreadFilters
     public const string All = "__all";
     public const string Favorites = "__favorites";
     public const string Unfiled = "__unfiled";
+    public const string AllProjects = "__all_projects";
+    public const string NoProject = "__no_project";
 
     public static IReadOnlyList<CodexThread> Apply(
         IReadOnlyList<CodexThread> threads,
+        string selectedFolder,
+        string query,
+        string selectedTag) =>
+        Apply(threads, AllProjects, selectedFolder, query, selectedTag);
+
+    public static IReadOnlyList<CodexThread> Apply(
+        IReadOnlyList<CodexThread> threads,
+        string selectedProject,
         string selectedFolder,
         string query,
         string selectedTag)
@@ -105,10 +116,70 @@ public static class ThreadFilters
             .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         return threads
+            .Where(thread => MatchesProject(thread, selectedProject))
             .Where(thread => MatchesFolder(thread, selectedFolder))
             .Where(thread => MatchesTag(thread, selectedTag))
             .Where(thread => terms.All(term => MatchesTerm(thread, term)))
             .OrderByDescending(thread => thread.UpdatedAt)
+            .ToList();
+    }
+
+    public static IReadOnlyList<CodexThread> FilterByProject(
+        IReadOnlyList<CodexThread> threads,
+        string selectedProject) =>
+        threads
+            .Where(thread => MatchesProject(thread, selectedProject))
+            .ToList();
+
+    public static IReadOnlyList<ProjectSummary> BuildProjectSummaries(IReadOnlyList<CodexThread> threads)
+    {
+        var projects = threads
+            .Where(thread => NormalizeProjectKey(thread.Workspace).Length > 0)
+            .GroupBy(thread => NormalizeProjectKey(thread.Workspace), StringComparer.OrdinalIgnoreCase)
+            .Select(group => new
+            {
+                Key = group.Key,
+                Workspace = group.First().Workspace.Trim(),
+                BaseName = ProjectNameForWorkspace(group.Key),
+                ParentName = ProjectParentNameForWorkspace(group.Key),
+                Count = group.Count()
+            })
+            .ToList();
+
+        var duplicateBaseNames = projects
+            .GroupBy(project => project.BaseName, StringComparer.CurrentCultureIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.CurrentCultureIgnoreCase);
+
+        var namedProjects = projects
+            .Select(project => new
+            {
+                project.Key,
+                project.Workspace,
+                project.BaseName,
+                project.Count,
+                Name = duplicateBaseNames.Contains(project.BaseName)
+                    ? $"{project.BaseName} · {(project.ParentName.Length > 0 ? project.ParentName : project.Workspace)}"
+                    : project.BaseName
+            })
+            .ToList();
+
+        var duplicateDisplayNames = namedProjects
+            .GroupBy(project => project.Name, StringComparer.CurrentCultureIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.CurrentCultureIgnoreCase);
+
+        return namedProjects
+            .Select(project => new ProjectSummary(
+                project.Key,
+                duplicateDisplayNames.Contains(project.Name)
+                    ? $"{project.BaseName} · {project.Workspace}"
+                    : project.Name,
+                project.Workspace,
+                project.Count))
+            .OrderBy(project => project.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
     }
 
@@ -142,6 +213,54 @@ public static class ThreadFilters
             Favorites => "Favorites",
             Unfiled => "Unfiled",
             _ => filter
+        };
+
+    public static string NormalizeProjectKey(string? workspace)
+    {
+        var normalized = (workspace ?? "").Trim();
+        return normalized.Length == 0
+            ? ""
+            : normalized.TrimEnd('\\', '/');
+    }
+
+    public static string ProjectNameForWorkspace(string? workspace)
+    {
+        var normalized = NormalizeProjectKey(workspace);
+        if (normalized.Length == 0)
+        {
+            return "No project";
+        }
+
+        var separatorIndex = Math.Max(normalized.LastIndexOf('\\'), normalized.LastIndexOf('/'));
+        return separatorIndex >= 0 && separatorIndex < normalized.Length - 1
+            ? normalized[(separatorIndex + 1)..]
+            : normalized;
+    }
+
+    private static string ProjectParentNameForWorkspace(string? workspace)
+    {
+        var normalized = NormalizeProjectKey(workspace);
+        var separatorIndex = Math.Max(normalized.LastIndexOf('\\'), normalized.LastIndexOf('/'));
+        if (separatorIndex <= 0)
+        {
+            return "";
+        }
+
+        var parent = normalized[..separatorIndex].TrimEnd('\\', '/');
+        var parentSeparatorIndex = Math.Max(parent.LastIndexOf('\\'), parent.LastIndexOf('/'));
+        return parentSeparatorIndex >= 0 && parentSeparatorIndex < parent.Length - 1
+            ? parent[(parentSeparatorIndex + 1)..]
+            : parent;
+    }
+
+    private static bool MatchesProject(CodexThread thread, string selectedProject) =>
+        selectedProject switch
+        {
+            AllProjects => true,
+            NoProject => NormalizeProjectKey(thread.Workspace).Length == 0,
+            _ => NormalizeProjectKey(thread.Workspace).Equals(
+                NormalizeProjectKey(selectedProject),
+                StringComparison.OrdinalIgnoreCase)
         };
 
     private static bool MatchesFolder(CodexThread thread, string selectedFolder) =>
