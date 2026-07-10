@@ -99,7 +99,7 @@ internal class App : Component
 
             if (!selectedStillExists)
             {
-                setSelectedId(snapshot.Threads.FirstOrDefault()?.Id ?? "");
+                setSelectedId(snapshot.Threads.Count > 0 ? snapshot.Threads[0].Id : "");
             }
         }, snapshotVersion, selectedId);
 
@@ -125,10 +125,10 @@ internal class App : Component
         var filtered = ThreadFilters.Apply(threads, selectedFilter, query, selectedTag);
         var selectedThread = filtered.FirstOrDefault(thread =>
                 thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
-            ?? filtered.FirstOrDefault()
+            ?? (filtered.Count > 0 ? filtered[0] : null)
             ?? threads.FirstOrDefault(thread =>
                 thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
-            ?? threads.FirstOrDefault();
+            ?? (threads.Count > 0 ? threads[0] : null);
         var activeDraft = selectedThread is null
             ? null
             : selectedThread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase)
@@ -168,7 +168,8 @@ internal class App : Component
         {
             setSelectedFilter(filter);
             setActivePage(ThreadsPage);
-            var next = ThreadFilters.Apply(threads, filter, query, selectedTag).FirstOrDefault();
+            var matches = ThreadFilters.Apply(threads, filter, query, selectedTag);
+            var next = matches.Count > 0 ? matches[0] : null;
             if (next is not null)
             {
                 SelectThread(next);
@@ -179,7 +180,8 @@ internal class App : Component
         {
             setSelectedTag(tag);
             setActivePage(ThreadsPage);
-            var next = ThreadFilters.Apply(threads, selectedFilter, query, tag).FirstOrDefault();
+            var matches = ThreadFilters.Apply(threads, selectedFilter, query, tag);
+            var next = matches.Count > 0 ? matches[0] : null;
             if (next is not null)
             {
                 SelectThread(next);
@@ -484,7 +486,7 @@ internal class App : Component
             .Backdrop(BackdropKind.Mica);
     }
 
-    private static Element RenderLoading(string status)
+    private static BorderElement RenderLoading(string status)
     {
         return Border(
             FlexColumn(
@@ -500,7 +502,7 @@ internal class App : Component
         .Flex(grow: 1, basis: 0);
     }
 
-    private static Element RenderSidebar(
+    private static BorderElement RenderSidebar(
         IReadOnlyList<CodexThread> threads,
         IReadOnlyList<TagDefinition> tags,
         string activePage,
@@ -580,7 +582,7 @@ internal class App : Component
             .Flex(basis: 230, shrink: 0);
     }
 
-    private static Element PageButton(
+    private static ButtonElement PageButton(
         string value,
         string label,
         string activePage,
@@ -630,7 +632,7 @@ internal class App : Component
             .WithKey($"page-{value}-{(selected ? "selected" : "normal")}");
     }
 
-    private static Element FilterButton(
+    private static ButtonElement FilterButton(
         string value,
         string label,
         string selectedFilter,
@@ -702,7 +704,7 @@ internal class App : Component
                 .OnDragOver(args => args.UIOverride.Caption = dropCaption);
     }
 
-    private static Element TagFilterButton(
+    private static ButtonElement TagFilterButton(
         TagSummary? summary,
         int totalCount,
         string selectedTag,
@@ -758,7 +760,7 @@ internal class App : Component
         return TagFilterButton(summary, selectedTag, selectTag);
     }
 
-    private static Element TagFilterButton(
+    private static ButtonElement TagFilterButton(
         TagSummary summary,
         string selectedTag,
         Action<string> selectTag)
@@ -790,7 +792,7 @@ internal class App : Component
             .WithKey($"tag-filter-{AutomationToken(tag.Name)}-{(selected ? "selected" : "normal")}");
     }
 
-    private static Element RenderThreadList(
+    private static BorderElement RenderThreadList(
         IReadOnlyList<CodexThread> threads,
         IReadOnlyList<TagDefinition> tags,
         string selectedId,
@@ -801,14 +803,14 @@ internal class App : Component
         string status)
     {
         var tagLookup = tags.ToDictionary(tag => tag.Name, StringComparer.OrdinalIgnoreCase);
-        var selectedIndex = threads
-            .Select((thread, index) => (thread, index))
-            .FirstOrDefault(pair => pair.thread.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
-            .index;
-
-        if (selectedIndex == 0 && threads.FirstOrDefault()?.Id != selectedId)
+        var selectedIndex = -1;
+        for (var index = 0; index < threads.Count; index++)
         {
-            selectedIndex = -1;
+            if (threads[index].Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
+            {
+                selectedIndex = index;
+                break;
+            }
         }
 
         var list = (ListView<CodexThread>(
@@ -883,10 +885,10 @@ internal class App : Component
             .Flex(grow: 1, basis: 0);
     }
 
-    private static Element RenderThreadRow(
+    private static BorderElement RenderThreadRow(
         CodexThread thread,
         bool selected,
-        IReadOnlyDictionary<string, TagDefinition> tagLookup,
+        Dictionary<string, TagDefinition> tagLookup,
         Action<CodexThread> selectThread)
     {
         var status = thread.IsArchived ? "Archived" : "Active";
@@ -967,7 +969,7 @@ internal class App : Component
             .WithKey(thread.Id);
     }
 
-    private static Element RenderDetails(
+    private static BorderElement RenderDetails(
         CodexThread? thread,
         EditDraft? draft,
         string titleDraft,
@@ -1175,7 +1177,7 @@ internal class App : Component
             .Flex(basis: 430, shrink: 0);
     }
 
-    private static Element RenderThreadTagSection(
+    private static FlexElement RenderThreadTagSection(
         CodexThread thread,
         IReadOnlyList<TagDefinition> tags,
         Action<CodexThread, TagDefinition> toggleThreadTag,
@@ -1275,7 +1277,7 @@ internal class App : Component
                 .Set("ButtonBorderBrushDisabled", Theme.Ref("ControlStrokeColorDefaultBrush")));
     }
 
-    private static Element RenderTagManagerPage(
+    private static BorderElement RenderTagManagerPage(
         IReadOnlyList<CodexThread> threads,
         IReadOnlyList<TagDefinition> tags,
         TagEditorDraft tagEditor,
@@ -1400,7 +1402,7 @@ internal class App : Component
             .Flex(grow: 1, basis: 0);
     }
 
-    private static Element RenderTagColorPicker(
+    private static FlexElement RenderTagColorPicker(
         TagEditorDraft tagEditor,
         Action<TagEditorDraft, global::Windows.UI.Color> setTagEditorColor)
     {
@@ -1439,7 +1441,7 @@ internal class App : Component
         };
     }
 
-    private static Element TagToggleButton(TagDefinition tag, bool selected, Action toggle)
+    private static ButtonElement TagToggleButton(TagDefinition tag, bool selected, Action toggle)
     {
         var foreground = ForegroundFor(tag.Color);
         return Button(tag.Name, toggle)
@@ -1463,7 +1465,7 @@ internal class App : Component
             .WithKey($"tag-toggle-{AutomationToken(tag.Name)}-{(selected ? "selected" : "normal")}");
     }
 
-    private static Element TagCatalogRow(
+    private static BorderElement TagCatalogRow(
         TagSummary summary,
         TagEditorDraft tagEditor,
         Action<TagEditorDraft> setTagEditor,
@@ -1529,7 +1531,7 @@ internal class App : Component
             .WithKey($"tag-catalog-{AutomationToken(tag.Name)}-{(editing ? "editing" : "normal")}-{(confirmingDelete ? "delete" : "idle")}");
     }
 
-    private static Element TagBadge(TagDefinition tag)
+    private static BorderElement TagBadge(TagDefinition tag)
     {
         return Border(
                 Caption(tag.Name)
@@ -1544,7 +1546,7 @@ internal class App : Component
             .ToolTip(string.IsNullOrWhiteSpace(tag.Description) ? tag.Name : tag.Description);
     }
 
-    private static Element CompactTagBadge(TagDefinition tag)
+    private static BorderElement CompactTagBadge(TagDefinition tag)
     {
         return Border(
                 Caption(tag.Name)
@@ -1559,7 +1561,7 @@ internal class App : Component
             .ToolTip(string.IsNullOrWhiteSpace(tag.Description) ? tag.Name : tag.Description);
     }
 
-    private static Element MetadataLine(string label, string value)
+    private static FlexElement MetadataLine(string label, string value)
     {
         return FlexRow(
             Caption(label).Foreground(Theme.SecondaryText).Width(76).Flex(shrink: 0),
@@ -1575,7 +1577,7 @@ internal class App : Component
         };
     }
 
-    private static Element Pill(string text, ThemeRef background)
+    private static BorderElement Pill(string text, ThemeRef background)
     {
         return Border(Caption(text).Foreground(Theme.PrimaryText))
             .Padding(7, 2)
