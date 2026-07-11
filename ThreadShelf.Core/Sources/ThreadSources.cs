@@ -4,7 +4,8 @@ internal sealed record ThreadSourceSnapshot(
     IReadOnlyList<CodexThread> Threads,
     string CodexHome,
     string DataSource,
-    bool SupportsNativeActions);
+    bool SupportsNativeActions,
+    DateTimeOffset LoadedAt);
 
 internal interface IThreadSource
 {
@@ -20,6 +21,7 @@ internal sealed class AppServerThreadSource : IThreadSource
             index.Threads,
             index.CodexHome,
             "Codex CLI app-server",
-            SupportsNativeActions: true);
+            SupportsNativeActions: true,
+            LoadedAt: DateTimeOffset.UtcNow);
     }
 }

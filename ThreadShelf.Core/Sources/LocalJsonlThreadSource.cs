@@ -46,7 +46,12 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
             {
                 Id = entry.Id,
                 Title = entry.Title,
-                UpdatedAt = entry.UpdatedAt,
+                CreatedAt = facts.CreatedAt,
+                UpdatedAt = entry.UpdatedAt
+                    ?? facts.UpdatedAt
+                    ?? sessionFile?.LastWriteTime
+                    ?? DateTimeOffset.MinValue,
+                Preview = facts.Preview,
                 SourcePath = sessionFile?.Path ?? "",
                 IsArchived = sessionFile?.IsArchived ?? false,
                 FileSizeBytes = sessionFile?.Length ?? 0,
@@ -68,7 +73,9 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
                 Title = facts.TitleFallback.Length > 0
                     ? facts.TitleFallback
                     : Path.GetFileNameWithoutExtension(sessionFile.Path),
-                UpdatedAt = facts.Timestamp ?? sessionFile.LastWriteTime,
+                CreatedAt = facts.CreatedAt,
+                UpdatedAt = facts.UpdatedAt ?? sessionFile.LastWriteTime,
+                Preview = facts.Preview,
                 SourcePath = sessionFile.Path,
                 IsArchived = sessionFile.IsArchived,
                 FileSizeBytes = sessionFile.Length,
@@ -83,7 +90,8 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
             threads.OrderByDescending(thread => thread.UpdatedAt).ToList(),
             CodexHome,
             "local JSONL files",
-            SupportsNativeActions: false);
+            SupportsNativeActions: false,
+            LoadedAt: DateTimeOffset.UtcNow);
     }
 
     private Dictionary<string, SessionIndexEntry> LoadSessionIndex()
@@ -111,11 +119,10 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
                     continue;
                 }
 
-                var updatedAt = TryGetDate(root, "updated_at") ?? DateTimeOffset.MinValue;
                 entries[id] = new SessionIndexEntry(
                     id,
                     GetString(root, "thread_name"),
-                    updatedAt == DateTimeOffset.MinValue ? DateTimeOffset.UtcNow : updatedAt);
+                    TryGetDate(root, "updated_at"));
             }
             catch (JsonException)
             {
@@ -204,7 +211,9 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
                         Workspace = FirstNonEmpty(GetString(payload, "cwd"), facts.Workspace),
                         Originator = FirstNonEmpty(GetString(payload, "originator"), facts.Originator),
                         Source = FirstNonEmpty(GetString(payload, "source"), facts.Source),
-                        Timestamp = TryGetDate(payload, "timestamp") ?? facts.Timestamp
+                        CreatedAt = TryGetDate(root, "timestamp")
+                            ?? TryGetDate(payload, "timestamp")
+                            ?? facts.CreatedAt
                     };
                 }
                 else if (type == "turn_context")
@@ -214,6 +223,10 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
                         Workspace = FirstNonEmpty(GetString(payload, "cwd"), facts.Workspace),
                         Model = FirstNonEmpty(GetString(payload, "model"), facts.Model)
                     };
+                }
+                else if (facts.Preview.Length == 0 && type == "response_item")
+                {
+                    facts = facts with { Preview = ExtractUserPreview(payload) };
                 }
             }
             catch (JsonException)
@@ -280,7 +293,23 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
     private static string FirstNonEmpty(string candidate, string fallback) =>
         string.IsNullOrWhiteSpace(candidate) ? fallback : candidate;
 
-    private sealed record SessionIndexEntry(string Id, string Title, DateTimeOffset UpdatedAt);
+    private static string ExtractUserPreview(JsonElement payload)
+    {
+        if (!payload.TryGetProperty("role", out var role)
+            || !string.Equals(role.GetString(), "user", StringComparison.OrdinalIgnoreCase)
+            || !payload.TryGetProperty("content", out var content)
+            || content.ValueKind != JsonValueKind.Array)
+        {
+            return "";
+        }
+
+        var text = string.Join(" ", content.EnumerateArray()
+            .Select(item => GetString(item, "text"))
+            .Where(value => !string.IsNullOrWhiteSpace(value))).Trim();
+        return text.Length <= 500 ? text : text[..500];
+    }
+
+    private sealed record SessionIndexEntry(string Id, string Title, DateTimeOffset? UpdatedAt);
     private sealed record SessionFile(
         string Id,
         string Path,
@@ -294,8 +323,10 @@ internal sealed class LocalJsonlThreadSource(string codexHome) : IThreadSource
         string Source,
         string Model,
         string TitleFallback,
-        DateTimeOffset? Timestamp)
+        DateTimeOffset? CreatedAt,
+        DateTimeOffset? UpdatedAt,
+        string Preview)
     {
-        public static SessionFacts Empty { get; } = new("", "", "", "", "", null);
+        public static SessionFacts Empty { get; } = new("", "", "", "", "", null, null, "");
     }
 }

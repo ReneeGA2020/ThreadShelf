@@ -49,6 +49,8 @@ public static partial class UiText
             ["DeleteTag"] = "删除标签 {0}",
             ["DeletedTag"] = "已删除标签 {0}",
             ["Description"] = "说明",
+            ["Created"] = "创建时间",
+            ["Preview"] = "摘要",
             ["DragThreadToFolder"] = "将 {0} 拖到文件夹",
             ["DragToFolder"] = "拖到文件夹",
             ["Edit"] = "编辑",

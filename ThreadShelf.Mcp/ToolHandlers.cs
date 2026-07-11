@@ -18,31 +18,29 @@ internal sealed class ThreadShelfToolHandlers(ThreadShelfCommandService service)
 
     private readonly ThreadShelfCommandService _service = service;
 
-    public object ListThreads(JsonElement arguments) => ToolResponse(_service.ListThreads(
-        new ListThreadsRequest
-        {
-            CodexHome = GetNullableString(arguments, "codexHome"),
-            Folder = GetStringOrDefault(arguments, "folder", ThreadFilters.All),
-            Tag = GetStringOrDefault(arguments, "tag", ""),
-            Query = GetStringOrDefault(arguments, "query", ""),
-            Archived = GetNullableBool(arguments, "archived"),
-            Limit = GetNullableInt(arguments, "limit")
-        }));
+    public object ListThreads(JsonElement arguments)
+    {
+        var request = GetListThreadsRequest(arguments);
+        return request.Fields.Count > 0
+            ? ToolResponse(_service.ListThreadsProjected(request))
+            : ToolResponse(_service.ListThreads(request));
+    }
 
     public object GetThread(JsonElement arguments) => ToolResponse(_service.GetThread(
         new GetThreadRequest
         {
             CodexHome = GetNullableString(arguments, "codexHome"),
-            ThreadId = GetString(arguments, "threadId")
+            ThreadId = GetString(arguments, "threadId"),
+            Refresh = GetNullableBool(arguments, "refresh") == true
         }));
 
-    public object SearchThreads(JsonElement arguments) => ToolResponse(_service.SearchThreads(
-        new ListThreadsRequest
-        {
-            CodexHome = GetNullableString(arguments, "codexHome"),
-            Query = GetString(arguments, "query"),
-            Limit = GetNullableInt(arguments, "limit")
-        }));
+    public object SearchThreads(JsonElement arguments)
+    {
+        var request = GetListThreadsRequest(arguments) with { Query = GetString(arguments, "query") };
+        return request.Fields.Count > 0
+            ? ToolResponse(_service.ListThreadsProjected(request))
+            : ToolResponse(_service.SearchThreads(request));
+    }
 
     public object UpdateThreadMetadata(JsonElement arguments) => ToolResponse(RequireConfirmed(
         arguments,
@@ -82,9 +80,13 @@ internal sealed class ThreadShelfToolHandlers(ThreadShelfCommandService service)
             Tag = GetString(arguments, "tag")
         })));
 
-    public object BatchUpdateThreads(JsonElement arguments) => ToolResponse(RequireConfirmed(
-        arguments,
-        () => _service.ApplyOrganization(GetOrganizationRequest(arguments))));
+    public object BatchUpdateThreads(JsonElement arguments)
+    {
+        var request = GetOrganizationRequest(arguments);
+        return ToolResponse(request.DryRun
+            ? _service.ApplyOrganization(request)
+            : RequireConfirmed(arguments, () => _service.ApplyOrganization(request)));
+    }
 
     public object ListTags(JsonElement arguments) => ToolResponse(_service.ListTags(
         new ListTagsRequest
@@ -180,6 +182,25 @@ internal sealed class ThreadShelfToolHandlers(ThreadShelfCommandService service)
                 ?? new ApplyOrganizationRequest()
             : new ApplyOrganizationRequest();
 
+    private static ListThreadsRequest GetListThreadsRequest(JsonElement arguments) =>
+        new()
+        {
+            CodexHome = GetNullableString(arguments, "codexHome"),
+            Folder = GetStringOrDefault(arguments, "folder", ThreadFilters.All),
+            Tag = GetStringOrDefault(arguments, "tag", ""),
+            Query = GetStringOrDefault(arguments, "query", ""),
+            Archived = GetNullableBool(arguments, "archived"),
+            Limit = GetNullableInt(arguments, "limit"),
+            Workspace = GetStringOrDefault(arguments, "workspace", ""),
+            UpdatedAfter = GetNullableString(arguments, "updatedAfter"),
+            UpdatedBefore = GetNullableString(arguments, "updatedBefore"),
+            CreatedAfter = GetNullableString(arguments, "createdAfter"),
+            CreatedBefore = GetNullableString(arguments, "createdBefore"),
+            ExcludeThreadIds = GetStringArray(arguments, "excludeThreadIds"),
+            Fields = GetStringArray(arguments, "fields"),
+            Refresh = GetNullableBool(arguments, "refresh") == true
+        };
+
     private static string GetString(JsonElement element, string propertyName) =>
         GetNullableString(element, propertyName) ?? "";
 
@@ -223,4 +244,27 @@ internal sealed class ThreadShelfToolHandlers(ThreadShelfCommandService service)
                   && int.TryParse(property.GetString(), out number)
                     ? number
                     : null;
+
+    private static IReadOnlyList<string> GetStringArray(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(propertyName, out var property))
+        {
+            return [];
+        }
+
+        if (property.ValueKind == JsonValueKind.String)
+        {
+            return (property.GetString() ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
+
+        return property.ValueKind == JsonValueKind.Array
+            ? property.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString() ?? "")
+                .Where(item => item.Length > 0)
+                .ToList()
+            : [];
+    }
 }

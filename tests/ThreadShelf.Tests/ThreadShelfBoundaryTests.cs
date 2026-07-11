@@ -73,6 +73,27 @@ public sealed class ThreadShelfBoundaryTests : IDisposable
     }
 
     [Fact]
+    public void LocalSourceDoesNotInventCurrentUpdatedTimeWhenIndexTimestampIsMissing()
+    {
+        CreateLocalFixture();
+        File.WriteAllText(
+            Path.Combine(_codexHome, "session_index.jsonl"),
+            JsonSerializer.Serialize(new { id = ThreadId, thread_name = "Boundary fixture" }));
+        var sessionPath = Path.Combine(
+            _codexHome,
+            "sessions",
+            "2026",
+            "07",
+            $"{ThreadId}.jsonl");
+        var expected = new DateTimeOffset(File.GetLastWriteTimeUtc(sessionPath), TimeSpan.Zero);
+
+        var thread = Assert.Single(new LocalJsonlThreadSource(_codexHome).Load().Threads);
+
+        Assert.Equal(expected, thread.UpdatedAt);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-10T00:00:00Z"), thread.CreatedAt);
+    }
+
+    [Fact]
     public void LocalSourceReportsRetryableErrorWhenJsonlIsExclusivelyLocked()
     {
         CreateLocalFixture();
@@ -104,7 +125,8 @@ public sealed class ThreadShelfBoundaryTests : IDisposable
             [Thread("Provider thread")],
             providerHome,
             "Codex CLI app-server",
-            SupportsNativeActions: true));
+            SupportsNativeActions: true,
+            LoadedAt: DateTimeOffset.UtcNow));
         var native = new RecordingNativeActions();
         var repository = new ThreadShelfRepository(
             _codexHome,
@@ -122,6 +144,32 @@ public sealed class ThreadShelfBoundaryTests : IDisposable
         Assert.Equal("Codex CLI app-server", snapshot.DataSource);
         Assert.Equal((ThreadId, "Renamed"), native.Renamed);
         Assert.Equal((ThreadId, true), native.Archived);
+    }
+
+    [Fact]
+    public void FacadeCachesProviderIndexUntilForcedRefresh()
+    {
+        var source = new CountingSource(new ThreadSourceSnapshot(
+            [Thread("Cached thread")],
+            _codexHome,
+            "Codex CLI app-server",
+            SupportsNativeActions: true,
+            LoadedAt: DateTimeOffset.UtcNow));
+        var repository = new ThreadShelfRepository(
+            _codexHome,
+            () => source,
+            _ => throw new InvalidOperationException("fallback should not run"),
+            new RecordingNativeActions());
+
+        var cold = repository.Load();
+        var hot = repository.Load();
+        var refreshed = repository.Load(forceRefresh: true);
+
+        Assert.Equal(2, source.LoadCount);
+        Assert.False(cold.IsSourceCached);
+        Assert.True(hot.IsSourceCached);
+        Assert.False(refreshed.IsSourceCached);
+        Assert.Equal(cold.SourceLoadedAt, hot.SourceLoadedAt);
     }
 
     [Fact]
@@ -192,6 +240,17 @@ public sealed class ThreadShelfBoundaryTests : IDisposable
     private sealed class StubSource(ThreadSourceSnapshot snapshot) : IThreadSource
     {
         public ThreadSourceSnapshot Load() => snapshot;
+    }
+
+    private sealed class CountingSource(ThreadSourceSnapshot snapshot) : IThreadSource
+    {
+        public int LoadCount { get; private set; }
+
+        public ThreadSourceSnapshot Load()
+        {
+            LoadCount++;
+            return snapshot with { LoadedAt = DateTimeOffset.UtcNow };
+        }
     }
 
     private sealed class ThrowingSource(string message) : IThreadSource

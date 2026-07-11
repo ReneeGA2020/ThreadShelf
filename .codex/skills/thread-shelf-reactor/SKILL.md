@@ -41,9 +41,9 @@ If Reactor behavior is unclear, inspect the local Reactor source at `E:\reactor-
 Prefer MCP for AI hosts and CLI for terminal scripts. Do not edit Codex JSONL or the ThreadShelf sidecar directly.
 
 1. Confirm the ThreadShelf tools are registered. Use MCP `tools/list`; expect 15 `threadshelf_*` tools. If unavailable, build/start `ThreadShelf.Mcp` and follow the configuration section in the AI guide.
-2. Read before writing. Use `threadshelf_search_threads` or `threadshelf_list_threads`, then `threadshelf_get_thread` with the exact ID.
+2. Read before writing. Use `threadshelf_search_threads` or `threadshelf_list_threads`, then `threadshelf_get_thread` with the exact ID. Prefer exact `workspace` and timezone-aware date filters over broad text queries; request `fields` when only a compact candidate set is needed.
 3. Distinguish permissions. Reads need no confirmation; sidecar and native mutations require `confirmed: true` in MCP or `--yes` in CLI. Ask before destructive tag deletion or native Codex writes unless the host already obtained confirmation.
-4. Write through one tool. Prefer `threadshelf_batch_update_threads` for related multi-thread folder/tag changes because it validates the full request before one sidecar write.
+4. Write through one tool. Prefer `threadshelf_batch_update_threads` for related multi-thread folder/tag changes because it validates the full request before one sidecar write. Use `addTags`/`removeTags` for incremental changes and preview broad changes with `dryRun: true` before confirming the write.
 5. Read back with `threadshelf_get_thread` or list/search and verify the requested fields.
 
 Use this selection table:

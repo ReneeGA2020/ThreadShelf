@@ -141,7 +141,7 @@ public sealed class ThreadShelfServiceTests : IDisposable
         public string LastTitle { get; private set; } = "";
         public bool LastArchived { get; private set; }
 
-        public ThreadShelfSnapshot Load() => new()
+        public ThreadShelfSnapshot Load(bool forceRefresh = false) => new()
         {
             Threads = [_thread],
             CodexHome = CodexHome,

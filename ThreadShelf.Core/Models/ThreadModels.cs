@@ -24,7 +24,11 @@ public sealed record CodexThread
 {
     public string Id { get; init; } = "";
     public string Title { get; init; } = "";
+    public DateTimeOffset? CreatedAt { get; init; }
     public DateTimeOffset UpdatedAt { get; init; }
+    public string Preview { get; init; } = "";
+    public string? Description { get; init; }
+    public string? Status { get; init; }
     public string SourcePath { get; init; } = "";
     public bool IsArchived { get; init; }
     public long FileSizeBytes { get; init; }
@@ -36,7 +40,10 @@ public sealed record CodexThread
 
     public string DisplayFolder => string.IsNullOrWhiteSpace(Metadata.Folder) ? "Unfiled" : Metadata.Folder.Trim();
     public string DisplayTitle => string.IsNullOrWhiteSpace(Title) ? "(Untitled thread)" : Title.Trim();
-    public string UpdatedLocal => UpdatedAt.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
+    public string CreatedLocal => CreatedAt?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "";
+    public string UpdatedLocal => UpdatedAt == DateTimeOffset.MinValue
+        ? ""
+        : UpdatedAt.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
     public string TagsText => Metadata.Tags.Count == 0 ? "" : string.Join(", ", Metadata.Tags);
 }
 
@@ -53,6 +60,8 @@ public sealed record ThreadShelfSnapshot
     public bool SupportsNativeActions { get; init; }
     public bool SupportsNativeProjectRename { get; init; }
     public DateTimeOffset LoadedAt { get; init; } = DateTimeOffset.Now;
+    public DateTimeOffset SourceLoadedAt { get; init; } = DateTimeOffset.Now;
+    public bool IsSourceCached { get; init; }
 
     public ThreadShelfSnapshot WithMetadata(string threadId, ThreadMetadata metadata) =>
         this with

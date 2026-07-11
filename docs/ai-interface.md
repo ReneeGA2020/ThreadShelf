@@ -61,18 +61,18 @@ The current catalog contains 15 tools. The response schemas returned by `tools/l
 
 ## Tool catalog
 
-All tools accept optional `codexHome`. Mutation tools require `confirmed: true`.
+All tools accept optional `codexHome`. Mutation tools require `confirmed: true`; a batch request with `dryRun: true` is read-only and does not.
 
 | Tool | Required arguments | Optional arguments | Access |
 | --- | --- | --- | --- |
-| `threadshelf_list_threads` | — | `folder`, `tag`, `query`, `archived`, `limit` | read |
-| `threadshelf_get_thread` | `threadId` | — | read |
-| `threadshelf_search_threads` | `query` | `limit` | read |
+| `threadshelf_list_threads` | — | `workspace`, `folder`, `tag`, `query`, `archived`, date bounds, `excludeThreadIds`, `fields`, `limit`, `refresh` | read |
+| `threadshelf_get_thread` | `threadId` | `refresh` | read |
+| `threadshelf_search_threads` | `query` | list filters, `fields`, `limit`, `refresh` | read |
 | `threadshelf_update_thread_metadata` | `threadId`, `confirmed` | `folder`, `notes`, `favorite` | sidecar write |
 | `threadshelf_move_thread` | `threadId`, `folder`, `confirmed` | — | sidecar write |
 | `threadshelf_add_thread_tag` | `threadId`, `tag`, `confirmed` | — | sidecar write |
 | `threadshelf_remove_thread_tag` | `threadId`, `tag`, `confirmed` | — | sidecar write |
-| `threadshelf_batch_update_threads` | `confirmed` | `tags`, `threads` | atomic sidecar write |
+| `threadshelf_batch_update_threads` | — | `tags`, `threads`, `dryRun`, `confirmed` | preview or atomic sidecar write |
 | `threadshelf_list_tags` | — | — | read |
 | `threadshelf_create_tag` | `name`, `confirmed` | `color`, `description` | sidecar write |
 | `threadshelf_update_tag` | `name`, `confirmed` | `newName`, `color`, `description` | sidecar write |
@@ -82,6 +82,10 @@ All tools accept optional `codexHome`. Mutation tools require `confirmed: true`.
 | `threadshelf_rename_thread` | `threadId`, `title`, `confirmed` | — | native Codex write |
 
 Folder filter values use stable internal keys: `__all`, `__favorites`, and `__unfiled`, or a literal folder name. An empty folder in a move/update clears the folder. Tag mutations require an existing global tag.
+
+`workspace` is an exact, case-insensitive path match after trimming trailing `/` or `\`; it is not a text search. `updatedAfter`, `updatedBefore`, `createdAfter`, and `createdBefore` are exclusive boundaries and require an ISO 8601 timezone (`Z` or an explicit offset). A created-time filter excludes threads whose provider cannot supply `createdAt`. Use `fields` to request a compact projection, for example `["id", "title", "updatedAt", "tags"]`; omitting it preserves the complete response.
+
+Long-lived MCP and UI processes reuse the in-memory provider thread index while re-reading ThreadShelf sidecar metadata. `source.loadedAt` identifies the provider load and `source.cached` reports a cache hit. Set `refresh: true` when fresh Codex archive/title/session state is required. Native archive and rename operations invalidate the index automatically. The one-command CLI does not write a disk cache.
 
 ## Recommended agent workflow
 
@@ -93,7 +97,7 @@ Always use read → confirm target → write → read:
 4. Call one mutation with `confirmed: true`.
 5. Call `threadshelf_get_thread` again and verify the requested fields.
 
-For multiple related changes, prefer `threadshelf_batch_update_threads`; it validates all IDs, tag definitions, colors, duplicate entries, and tag references before writing the sidecar once.
+For multiple related changes, prefer `threadshelf_batch_update_threads`; it validates all IDs, tag definitions, colors, duplicate entries, tag references, and operation conflicts before writing the sidecar once. Preview first with `dryRun: true` when the target set is broad.
 
 ### Example: find → move → tag → verify
 
@@ -131,19 +135,19 @@ Do not create the tag blindly on every run: an existing name returns `tag_confli
 {
   "name": "threadshelf_batch_update_threads",
   "arguments": {
-    "confirmed": true,
+    "dryRun": true,
     "tags": [
       { "name": "ready", "color": "#1F883D", "description": "Ready for review" }
     ],
     "threads": [
-      { "threadId": "<id-1>", "folder": "Delivery", "tags": ["ready"] },
-      { "threadId": "<id-2>", "folder": "References", "tags": [] }
+      { "threadId": "<id-1>", "folder": "Delivery", "addTags": ["ready"] },
+      { "threadId": "<id-2>", "folder": "References", "removeTags": ["blocked"] }
     ]
   }
 }
 ```
 
-Omitted `folder` or `tags` preserves that field. An empty folder clears it; an empty tag array removes all tags.
+The result includes each thread's before/after folder and tags plus `changed`. Re-submit with `dryRun: false, confirmed: true` to write. `addTags` and `removeTags` preserve unrelated tags; `setTags` explicitly replaces the complete set. The legacy `tags` property remains a compatibility alias for `setTags`. Mixing replacement and incremental operations, or adding and removing the same tag, is rejected. An empty folder clears it; an empty `setTags` array removes all tags.
 
 ## Responses and provider boundaries
 
@@ -159,7 +163,9 @@ MCP returns a standard MCP text content item whose text is a JSON envelope:
   "source": {
     "provider": "app-server",
     "codexHome": "C:\\Users\\me\\.codex",
-    "sidecarPath": "C:\\Users\\me\\.codex\\threadshelf\\threadshelf.json"
+    "sidecarPath": "C:\\Users\\me\\.codex\\threadshelf\\threadshelf.json",
+    "loadedAt": "2026-07-11T08:00:00Z",
+    "cached": true
   }
 }
 ```
@@ -199,11 +205,14 @@ The CLI uses the same command service and envelopes:
 
 ```powershell
 dotnet run --project ThreadShelf.Cli -- threads list --json
+dotnet run --project ThreadShelf.Cli -- threads list --workspace E:\\Widget --updated-after 2026-07-01T00:00:00Z --fields id,title,updatedAt,tags --format jsonl
 dotnet run --project ThreadShelf.Cli -- threads get <id> --json
 dotnet run --project ThreadShelf.Cli -- threads move <id> --folder Delivery --yes --json
 dotnet run --project ThreadShelf.Cli -- threads tag add <id> ready --yes --json
 dotnet run --project ThreadShelf.Cli -- native archive <id> --yes --json
 ```
+
+`--format jsonl` writes one thread object per line for streaming scripts. Batch JSON uses the same `setTags`/`addTags`/`removeTags` and `dryRun` properties as MCP; `threads batch-update --file plan.json --dry-run` does not require `--yes`.
 
 Run `dotnet run --project ThreadShelf.Cli -- --help` for the complete current command syntax.
 
