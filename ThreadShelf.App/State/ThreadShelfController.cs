@@ -88,7 +88,7 @@ internal sealed partial class ThreadShelfController : Component
         {
             try
             {
-                var loaded = threadService.Load();
+                var loaded = threadService.Load(forceRefresh: true);
                 setSnapshot(loaded);
                 setLoadError("");
                 setStatus(DescribeLoad(loaded));

@@ -47,6 +47,45 @@ public sealed class ThreadShelfCommandServiceTests : IDisposable
         Assert.Equal(FirstThreadId, thread.Id);
         Assert.Equal(@"E:\Widget", thread.Workspace);
         Assert.Equal("gpt-5", thread.Model);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-09T08:00:00Z"), thread.CreatedAt);
+        Assert.Equal("Initial request", thread.Preview);
+    }
+
+    [Fact]
+    public void StructuredFiltersUseExactWorkspaceExclusiveDatesAndProjection()
+    {
+        var result = _service.ListThreadsProjected(new ListThreadsRequest
+        {
+            CodexHome = _codexHome,
+            Workspace = @"e:\widget\\",
+            UpdatedAfter = "2026-07-08T08:00:00Z",
+            UpdatedBefore = "2026-07-10T00:00:00+00:00",
+            ExcludeThreadIds = [SecondThreadId],
+            Fields = ["id", "title", "createdAt", "tags"]
+        });
+
+        AssertSuccess(result);
+        var row = Assert.Single(result.Data!);
+        Assert.Equal(4, row.Count);
+        Assert.Equal(FirstThreadId, row["id"]);
+        Assert.Equal("Fix login bug", row["title"]);
+        Assert.NotNull(row["createdAt"]);
+
+        var boundary = _service.ListThreads(new ListThreadsRequest
+        {
+            CodexHome = _codexHome,
+            UpdatedAfter = "2026-07-09T08:00:00Z"
+        });
+        AssertSuccess(boundary);
+        Assert.Empty(boundary.Data!);
+
+        var invalid = _service.ListThreads(new ListThreadsRequest
+        {
+            CodexHome = _codexHome,
+            UpdatedAfter = "2026-07-09T08:00:00"
+        });
+        Assert.False(invalid.Ok);
+        Assert.Equal("invalid_argument", invalid.Error?.Code);
     }
 
     [Fact]
@@ -269,6 +308,105 @@ public sealed class ThreadShelfCommandServiceTests : IDisposable
     }
 
     [Fact]
+    public void BatchIncrementalTagsSupportDryRunAndPreserveExistingTags()
+    {
+        AssertSuccess(_service.CreateTag(new CreateTagRequest
+        {
+            CodexHome = _codexHome,
+            Name = "bug",
+            Color = "#D1242F"
+        }));
+        AssertSuccess(_service.CreateTag(new CreateTagRequest
+        {
+            CodexHome = _codexHome,
+            Name = "ready",
+            Color = "#1F883D"
+        }));
+        AssertSuccess(_service.AddThreadTag(new ThreadTagRequest
+        {
+            CodexHome = _codexHome,
+            ThreadId = FirstThreadId,
+            Tag = "bug"
+        }));
+
+        var request = new ApplyOrganizationRequest
+        {
+            CodexHome = _codexHome,
+            DryRun = true,
+            Threads =
+            [
+                new OrganizationThreadUpdate
+                {
+                    ThreadId = FirstThreadId,
+                    Folder = "Delivery",
+                    AddTags = ["READY", "ready"]
+                }
+            ]
+        };
+        var preview = _service.ApplyOrganization(request);
+
+        AssertSuccess(preview);
+        Assert.True(preview.Data!.DryRun);
+        Assert.Equal(1, preview.Data.ThreadsUpdated);
+        var change = Assert.Single(preview.Data.Changes);
+        Assert.Equal(["bug"], change.BeforeTags);
+        Assert.Equal(["bug", "ready"], change.AfterTags);
+        var unchanged = _service.GetThread(new GetThreadRequest
+        {
+            CodexHome = _codexHome,
+            ThreadId = FirstThreadId
+        });
+        AssertSuccess(unchanged);
+        Assert.Equal("", unchanged.Data!.Metadata.Folder);
+        Assert.Equal(["bug"], unchanged.Data.Metadata.Tags);
+
+        var applied = _service.ApplyOrganization(request with { DryRun = false });
+        AssertSuccess(applied);
+        Assert.Equal("Delivery", _service.GetThread(new GetThreadRequest
+        {
+            CodexHome = _codexHome,
+            ThreadId = FirstThreadId
+        }).Data!.Metadata.Folder);
+        Assert.Equal(["bug", "ready"], _service.GetThread(new GetThreadRequest
+        {
+            CodexHome = _codexHome,
+            ThreadId = FirstThreadId
+        }).Data!.Metadata.Tags);
+    }
+
+    [Fact]
+    public void BatchRejectsConflictingTagOperationsWithoutWriting()
+    {
+        AssertSuccess(_service.CreateTag(new CreateTagRequest
+        {
+            CodexHome = _codexHome,
+            Name = "ready",
+            Color = "#1F883D"
+        }));
+        var result = _service.ApplyOrganization(new ApplyOrganizationRequest
+        {
+            CodexHome = _codexHome,
+            Threads =
+            [
+                new OrganizationThreadUpdate
+                {
+                    ThreadId = FirstThreadId,
+                    AddTags = ["ready"],
+                    RemoveTags = ["READY"]
+                }
+            ]
+        });
+
+        Assert.False(result.Ok);
+        Assert.Equal("invalid_argument", result.Error?.Code);
+        Assert.Empty(_service.GetThread(new GetThreadRequest
+        {
+            CodexHome = _codexHome,
+            ThreadId = FirstThreadId
+        }).Data!.Metadata.Tags);
+    }
+
+    [Fact]
     public void NativeActionReturnsUnsupportedErrorOnFallback()
     {
         var result = _service.ArchiveThread(new NativeThreadRequest
@@ -403,6 +541,16 @@ public sealed class ThreadShelfCommandServiceTests : IDisposable
                     {
                         cwd,
                         model
+                    }
+                }),
+                JsonSerializer.Serialize(new
+                {
+                    type = "response_item",
+                    payload = new
+                    {
+                        type = "message",
+                        role = "user",
+                        content = new[] { new { type = "input_text", text = "Initial request" } }
                     }
                 })
             ]);

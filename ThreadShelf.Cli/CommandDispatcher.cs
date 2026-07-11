@@ -11,6 +11,11 @@ internal static class CommandDispatcher
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    private static readonly JsonSerializerOptions CompactJsonOptions = new(JsonOptions)
+    {
+        WriteIndented = false
+    };
+
     public static int Run(string[] args)
     {
         ParsedArgs parsed;
@@ -69,31 +74,19 @@ internal static class CommandDispatcher
 
         return action switch
         {
-            "list" => Print(
-                service.ListThreads(new ListThreadsRequest
-                {
-                    CodexHome = codexHome,
-                    Folder = parsed.OptionOrDefault("--folder", ThreadFilters.All),
-                    Tag = parsed.OptionOrDefault("--tag", ""),
-                    Query = parsed.OptionOrDefault("--query", ""),
-                    Archived = parsed.OptionalBool("--archived"),
-                    Limit = parsed.OptionalInt("--limit")
-                }),
-                json),
+            "list" => PrintThreadList(service, ThreadListRequest(parsed, codexHome), parsed),
             "get" => Print(
                 service.GetThread(new GetThreadRequest
                 {
                     CodexHome = codexHome,
-                    ThreadId = RequirePosition(parsed, 2, "thread id")
+                    ThreadId = RequirePosition(parsed, 2, "thread id"),
+                    Refresh = parsed.HasFlag("--refresh")
                 }),
                 json),
-            "search" => Print(
-                service.SearchThreads(new ListThreadsRequest
-                {
-                    CodexHome = codexHome,
-                    Query = QueryText(parsed, 2)
-                }),
-                json),
+            "search" => PrintThreadList(
+                service,
+                ThreadListRequest(parsed, codexHome) with { Query = QueryText(parsed, 2) },
+                parsed),
             "update" => Print(
                 RequireYes(parsed, () => service.UpdateThreadMetadata(new UpdateThreadMetadataRequest
                 {
@@ -113,8 +106,7 @@ internal static class CommandDispatcher
                 })),
                 json),
             "batch-update" => Print(
-                RequireYes(parsed, () => service.ApplyOrganization(
-                    ReadOrganizationRequest(parsed, codexHome))),
+                ApplyOrganization(service, parsed, codexHome),
                 json),
             "tag" => DispatchThreadTag(service, parsed),
             _ => Print(
@@ -240,6 +232,54 @@ internal static class CommandDispatcher
                 "confirmation_required",
                 "Pass --yes to confirm this mutation.");
 
+    private static ThreadShelfCommandResult<ApplyOrganizationResult> ApplyOrganization(
+        ThreadShelfCommandService service,
+        ParsedArgs parsed,
+        string? codexHome)
+    {
+        var request = ReadOrganizationRequest(parsed, codexHome);
+        return request.DryRun
+            ? service.ApplyOrganization(request)
+            : RequireYes(parsed, () => service.ApplyOrganization(request));
+    }
+
+    private static int PrintThreadList(
+        ThreadShelfCommandService service,
+        ListThreadsRequest request,
+        ParsedArgs parsed)
+    {
+        var format = parsed.OptionOrDefault("--format", "json").Trim().ToLowerInvariant();
+        if (format is not ("json" or "jsonl"))
+        {
+            throw new CliUsageException("--format must be json or jsonl.");
+        }
+
+        if (request.Fields.Count > 0)
+        {
+            var result = service.ListThreadsProjected(request);
+            return format == "jsonl" ? PrintJsonLines(result) : Print(result, parsed.HasFlag("--json"));
+        }
+
+        var full = service.ListThreads(request);
+        return format == "jsonl" ? PrintJsonLines(full) : Print(full, parsed.HasFlag("--json"));
+    }
+
+    private static int PrintJsonLines<T>(ThreadShelfCommandResult<IReadOnlyList<T>> result)
+    {
+        if (!result.Ok)
+        {
+            Console.Error.WriteLine(JsonSerializer.Serialize(result, CompactJsonOptions));
+            return 2;
+        }
+
+        foreach (var item in result.Data!)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(item, CompactJsonOptions));
+        }
+
+        return 0;
+    }
+
     private static int Print<T>(ThreadShelfCommandResult<T> result, bool json)
     {
         if (json)
@@ -291,6 +331,30 @@ internal static class CommandDispatcher
         return query;
     }
 
+    private static ListThreadsRequest ThreadListRequest(ParsedArgs parsed, string? codexHome) =>
+        new()
+        {
+            CodexHome = codexHome,
+            Folder = parsed.OptionOrDefault("--folder", ThreadFilters.All),
+            Tag = parsed.OptionOrDefault("--tag", ""),
+            Query = parsed.OptionOrDefault("--query", ""),
+            Archived = parsed.OptionalBool("--archived"),
+            Limit = parsed.OptionalInt("--limit"),
+            Workspace = parsed.OptionOrDefault("--workspace", ""),
+            UpdatedAfter = parsed.OptionOrNull("--updated-after"),
+            UpdatedBefore = parsed.OptionOrNull("--updated-before"),
+            CreatedAfter = parsed.OptionOrNull("--created-after"),
+            CreatedBefore = parsed.OptionOrNull("--created-before"),
+            ExcludeThreadIds = SplitList(parsed.OptionOrNull("--exclude-thread-ids")),
+            Fields = SplitList(parsed.OptionOrNull("--fields")),
+            Refresh = parsed.HasFlag("--refresh")
+        };
+
+    private static IReadOnlyList<string> SplitList(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? []
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     private static ApplyOrganizationRequest ReadOrganizationRequest(
         ParsedArgs parsed,
         string? codexHome)
@@ -301,7 +365,11 @@ internal static class CommandDispatcher
             var json = path == "-" ? Console.In.ReadToEnd() : File.ReadAllText(path);
             var request = JsonSerializer.Deserialize<ApplyOrganizationRequest>(json, JsonOptions)
                 ?? throw new CliUsageException("Organization JSON cannot be empty.");
-            return request with { CodexHome = codexHome ?? request.CodexHome };
+            return request with
+            {
+                CodexHome = codexHome ?? request.CodexHome,
+                DryRun = parsed.HasFlag("--dry-run") || request.DryRun
+            };
         }
         catch (JsonException ex)
         {
@@ -326,14 +394,17 @@ internal static class CommandDispatcher
           --codex-home <path>  Use a specific CODEX_HOME
           --json               Emit stable JSON envelope
           --yes                Confirm mutations
+          --refresh            Force a fresh Codex thread index load
 
         Commands:
-          threadshelf threads list [--folder <name>] [--tag <name>] [--query <text>] [--limit <n>] [--archived true|false]
-          threadshelf threads get <id>
-          threadshelf threads search <query>
+          threadshelf threads list [--workspace <path>] [--folder <name>] [--tag <name>] [--query <text>] [--limit <n>] [--archived true|false]
+              [--updated-after <ISO8601>] [--updated-before <ISO8601>] [--created-after <ISO8601>] [--created-before <ISO8601>]
+              [--exclude-thread-ids <id,...>] [--fields <field,...>] [--format json|jsonl] [--refresh]
+          threadshelf threads get <id> [--refresh]
+          threadshelf threads search <query> [list filters] [--fields <field,...>] [--format json|jsonl] [--refresh]
           threadshelf threads update <id> [--folder <name>] [--notes <text>] [--favorite true|false] --yes
           threadshelf threads move <id> --folder <name> --yes
-          threadshelf threads batch-update --file <path|-> --yes
+          threadshelf threads batch-update --file <path|-> [--dry-run | --yes]
           threadshelf threads tag add <id> <tag> --yes
           threadshelf threads tag remove <id> <tag> --yes
           threadshelf tags list

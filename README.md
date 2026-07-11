@@ -145,10 +145,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Start-ThreadShelfDemo.ps1 -La
 
 ```powershell
 dotnet run --project ThreadShelf.Cli -- threads list --json
+dotnet run --project ThreadShelf.Cli -- threads list --workspace E:\Widget --updated-after 2026-07-01T00:00:00Z --fields id,title,updatedAt,tags --format jsonl
 dotnet run --project ThreadShelf.Cli -- threads search "follow up" --json
 dotnet run --project ThreadShelf.Cli -- threads batch-update --file organization.json --yes --json
 dotnet run --project ThreadShelf.Mcp
 ```
+
+list/search 支持精确 workspace、带时区的创建/更新时间边界、排除 ID 和紧凑字段投影。长驻 MCP 会复用内存会话索引，可用 `refresh` 强制刷新。批量整理推荐使用 `addTags` / `removeTags` 增量语义，并先以 `dryRun` 查看逐任务 before/after；旧 `tags` 仍兼容为显式全量替换。
 
 完整工具、参数、权限、成功/错误 envelope 和安全边界见 [AI/CLI/MCP 使用指南](docs/ai-interface.md)。正常自动化应优先使用 MCP/CLI，不要直接编辑 sidecar，更不要编辑 Codex JSONL。
 

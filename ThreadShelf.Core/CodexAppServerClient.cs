@@ -280,15 +280,22 @@ public sealed class CodexAppServerClient : IDisposable
         var path = GetString(item, "path");
         var preview = GetString(item, "preview");
         var name = GetString(item, "name");
+        var createdAt = GetDate(item, "createdAt");
         var updatedAt = GetUnixDate(item, "updatedAt")
             ?? GetUnixDate(item, "recencyAt")
-            ?? DateTimeOffset.UtcNow;
+            ?? createdAt
+            ?? GetLastWriteTime(path)
+            ?? DateTimeOffset.MinValue;
 
         return new CodexThread
         {
             Id = id,
             Title = string.IsNullOrWhiteSpace(name) ? preview : name,
+            CreatedAt = createdAt,
             UpdatedAt = updatedAt,
+            Preview = preview,
+            Description = GetNullableString(item, "description"),
+            Status = FormatStatus(item),
             SourcePath = path,
             IsArchived = isArchived,
             FileSizeBytes = GetFileSize(path),
@@ -332,6 +339,59 @@ public sealed class CodexAppServerClient : IDisposable
         {
             return null;
         }
+    }
+
+    private static DateTimeOffset? GetLastWriteTime(string path)
+    {
+        try
+        {
+            return File.Exists(path)
+                ? new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero)
+                : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static DateTimeOffset? GetDate(JsonElement element, string propertyName)
+    {
+        var unix = GetUnixDate(element, propertyName);
+        if (unix is not null
+            || !element.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.String)
+        {
+            return unix;
+        }
+
+        return DateTimeOffset.TryParse(property.GetString(), out var value) ? value : null;
+    }
+
+    private static string? FormatStatus(JsonElement element)
+    {
+        if (!element.TryGetProperty("status", out var status)
+            || status.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        if (status.ValueKind == JsonValueKind.String)
+        {
+            return status.GetString();
+        }
+
+        if (status.ValueKind == JsonValueKind.Object
+            && status.TryGetProperty("type", out var type))
+        {
+            return type.GetString() ?? status.ToString();
+        }
+
+        return status.ToString();
     }
 
     private static string FormatSource(JsonElement element)

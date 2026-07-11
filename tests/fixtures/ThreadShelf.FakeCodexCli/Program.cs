@@ -101,8 +101,11 @@ object ListThreads(bool archived)
         {
             id = thread.Id,
             name = thread.Title,
-            preview = thread.Title,
+            preview = $"Preview for {thread.Title}",
+            description = "Fake thread description",
+            createdAt = thread.UpdatedAt - 3600,
             updatedAt = thread.UpdatedAt,
+            status = new { type = "idle" },
             cwd = thread.Workspace,
             path = "",
             modelProvider = "fake-demo",

@@ -8,20 +8,30 @@ internal sealed class ParsedArgs
         "--description",
         "--favorite",
         "--file",
+        "--fields",
         "--folder",
+        "--format",
         "--limit",
         "--name",
         "--new-name",
         "--notes",
         "--query",
         "--tag",
-        "--title"
+        "--title",
+        "--workspace",
+        "--updated-after",
+        "--updated-before",
+        "--created-after",
+        "--created-before",
+        "--exclude-thread-ids"
     };
 
     private static readonly HashSet<string> FlagOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "--help",
+        "--dry-run",
         "--json",
+        "--refresh",
         "--yes",
         "-h"
     };

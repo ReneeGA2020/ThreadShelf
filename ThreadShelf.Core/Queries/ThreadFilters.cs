@@ -218,6 +218,9 @@ public static class ThreadFilters
         var fields = new[]
         {
             thread.DisplayTitle,
+            thread.Preview,
+            thread.Description,
+            thread.Status,
             thread.Id,
             thread.DisplayFolder,
             thread.TagsText,

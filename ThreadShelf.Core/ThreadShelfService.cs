@@ -9,7 +9,7 @@ public interface IThreadShelfRepository
     string CodexHome { get; }
     string SidecarPath { get; }
 
-    ThreadShelfSnapshot Load();
+    ThreadShelfSnapshot Load(bool forceRefresh = false);
     void SaveMetadata(string threadId, ThreadMetadata metadata);
     void SaveOrganization(
         IReadOnlyList<TagDefinition> tags,
@@ -34,9 +34,24 @@ public sealed record ThreadShelfServiceResult<T>(T Data, ThreadShelfSnapshot Sna
 public sealed record ThreadOrganizationUpdate(
     string ThreadId,
     string? Folder,
-    IReadOnlyList<string>? Tags);
+    IReadOnlyList<string>? Tags,
+    IReadOnlyList<string>? SetTags = null,
+    IReadOnlyList<string>? AddTags = null,
+    IReadOnlyList<string>? RemoveTags = null);
 
-public sealed record ThreadOrganizationResult(int TagsUpserted, int ThreadsUpdated);
+public sealed record ThreadOrganizationChange(
+    string ThreadId,
+    string BeforeFolder,
+    string AfterFolder,
+    IReadOnlyList<string> BeforeTags,
+    IReadOnlyList<string> AfterTags,
+    bool Changed);
+
+public sealed record ThreadOrganizationResult(
+    int TagsUpserted,
+    int ThreadsUpdated,
+    bool DryRun,
+    IReadOnlyList<ThreadOrganizationChange> Changes);
 
 public sealed class ThreadShelfService(IThreadShelfRepository repository)
 {
@@ -46,11 +61,11 @@ public sealed class ThreadShelfService(IThreadShelfRepository repository)
     public string CodexHome => _repository.CodexHome;
     public string SidecarPath => _repository.SidecarPath;
 
-    public ThreadShelfSnapshot Load() => _repository.Load();
+    public ThreadShelfSnapshot Load(bool forceRefresh = false) => _repository.Load(forceRefresh);
 
-    public ThreadShelfServiceResult<CodexThread> GetThread(string threadId)
+    public ThreadShelfServiceResult<CodexThread> GetThread(string threadId, bool forceRefresh = false)
     {
-        var snapshot = Load();
+        var snapshot = Load(forceRefresh);
         return new(RequireThread(snapshot, threadId), snapshot);
     }
 
@@ -189,7 +204,8 @@ public sealed class ThreadShelfService(IThreadShelfRepository repository)
 
     public ThreadShelfServiceResult<ThreadOrganizationResult> ApplyOrganization(
         IReadOnlyList<TagDefinition>? requestedTags,
-        IReadOnlyList<ThreadOrganizationUpdate>? requestedThreads)
+        IReadOnlyList<ThreadOrganizationUpdate>? requestedThreads,
+        bool dryRun = false)
     {
         requestedTags ??= [];
         requestedThreads ??= [];
@@ -202,8 +218,9 @@ public sealed class ThreadShelfService(IThreadShelfRepository repository)
 
         var snapshot = Load();
         var tags = new List<TagDefinition>(requestedTags.Count);
-        var tagNames = new HashSet<string>(
-            snapshot.Tags.Select(tag => tag.Name),
+        var tagNames = snapshot.Tags.ToDictionary(
+            tag => tag.Name,
+            tag => tag.Name,
             StringComparer.OrdinalIgnoreCase);
 
         foreach (var tag in requestedTags)
@@ -226,10 +243,11 @@ public sealed class ThreadShelfService(IThreadShelfRepository repository)
             }
 
             tags.Add(normalized);
-            tagNames.Add(normalized.Name);
+            tagNames[normalized.Name] = normalized.Name;
         }
 
         var updates = new Dictionary<string, ThreadMetadata>(StringComparer.OrdinalIgnoreCase);
+        var changes = new List<ThreadOrganizationChange>(requestedThreads.Count);
         foreach (var update in requestedThreads)
         {
             if (update is null)
@@ -249,13 +267,55 @@ public sealed class ThreadShelfService(IThreadShelfRepository repository)
             }
 
             var thread = RequireThread(snapshot, threadId);
-            var normalizedTags = update.Tags?
-                .Select(ThreadShelfRepository.NormalizeTagName)
-                .Where(candidate => candidate.Length > 0)
+            var hasLegacySet = update.Tags is not null;
+            var hasExplicitSet = update.SetTags is not null;
+            var hasIncremental = update.AddTags is not null || update.RemoveTags is not null;
+            if (hasLegacySet && (hasExplicitSet || hasIncremental)
+                || hasExplicitSet && hasIncremental)
+            {
+                throw Invalid(
+                    "organization_tag_operation_conflict",
+                    $"Thread '{thread.Id}' mixes full replacement and incremental tag operations.",
+                    new { threadId = thread.Id });
+            }
+
+            if (update.Folder is null && !hasLegacySet && !hasExplicitSet && !hasIncremental)
+            {
+                throw Invalid(
+                    "organization_thread_empty",
+                    $"Thread '{thread.Id}' does not contain an organization change.",
+                    new { threadId = thread.Id });
+            }
+
+            var normalizedTags = CanonicalizeTagNames(
+                NormalizeTagNames(update.SetTags ?? update.Tags), tagNames);
+            var addTags = CanonicalizeTagNames(NormalizeTagNames(update.AddTags), tagNames) ?? [];
+            var removeTags = CanonicalizeTagNames(NormalizeTagNames(update.RemoveTags), tagNames) ?? [];
+            var conflictTag = addTags.FirstOrDefault(candidate =>
+                removeTags.Contains(candidate, StringComparer.OrdinalIgnoreCase));
+            if (conflictTag is not null)
+            {
+                throw Invalid(
+                    "organization_tag_operation_conflict",
+                    $"Tag '{conflictTag}' cannot be added and removed from thread '{thread.Id}' in one request.",
+                    new { threadId = thread.Id, name = conflictTag });
+            }
+
+            var finalTags = normalizedTags ?? thread.Metadata.Tags.ToList();
+            if (hasIncremental)
+            {
+                finalTags = finalTags
+                    .Where(name => !removeTags.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    .Concat(addTags)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(candidate => candidate, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+            }
+
+            var referencedTags = finalTags.Concat(addTags).Concat(removeTags)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(candidate => candidate, StringComparer.CurrentCultureIgnoreCase)
                 .ToList();
-            var missingTag = normalizedTags?.FirstOrDefault(candidate => !tagNames.Contains(candidate));
+            var missingTag = referencedTags.FirstOrDefault(candidate => !tagNames.ContainsKey(candidate));
             if (missingTag is not null)
             {
                 throw new ThreadShelfValidationException(
@@ -264,18 +324,51 @@ public sealed class ThreadShelfService(IThreadShelfRepository repository)
                     new { name = missingTag });
             }
 
-            updates[thread.Id] = ThreadShelfRepository.MetadataFrom(
+            var next = ThreadShelfRepository.MetadataFrom(
                 new EditDraft(
                     update.Folder ?? thread.Metadata.Folder,
                     thread.Metadata.Notes,
                     thread.Metadata.Favorite),
-                normalizedTags ?? thread.Metadata.Tags);
+                finalTags);
+            var changed = !next.Folder.Equals(thread.Metadata.Folder, StringComparison.Ordinal)
+                || !next.Tags.SequenceEqual(thread.Metadata.Tags, StringComparer.OrdinalIgnoreCase);
+            if (changed)
+            {
+                updates[thread.Id] = next;
+            }
+
+            changes.Add(new ThreadOrganizationChange(
+                thread.Id,
+                thread.Metadata.Folder,
+                next.Folder,
+                thread.Metadata.Tags,
+                next.Tags,
+                changed));
         }
 
-        _repository.SaveOrganization(tags, updates);
-        var reloaded = Load();
-        return new(new ThreadOrganizationResult(tags.Count, updates.Count), reloaded);
+        if (!dryRun)
+        {
+            _repository.SaveOrganization(tags, updates);
+        }
+
+        var reloaded = dryRun ? snapshot : Load();
+        return new(new ThreadOrganizationResult(tags.Count, updates.Count, dryRun, changes), reloaded);
     }
+
+    private static List<string>? NormalizeTagNames(IReadOnlyList<string>? names) =>
+        names?.Select(name => ThreadShelfRepository.NormalizeTagName(name ?? ""))
+            .Where(candidate => candidate.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(candidate => candidate, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+    private static List<string>? CanonicalizeTagNames(
+        List<string>? names,
+        IReadOnlyDictionary<string, string> canonicalNames) =>
+        names?.Select(name => canonicalNames.GetValueOrDefault(name) ?? name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
 
     public ThreadShelfServiceResult<ThreadShelfSnapshot> RenameProjectAlias(
         string projectKey,

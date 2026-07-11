@@ -145,10 +145,13 @@ The script builds the app, creates fictional projects, tasks, tags, and notes, a
 
 ```powershell
 dotnet run --project ThreadShelf.Cli -- threads list --json
+dotnet run --project ThreadShelf.Cli -- threads list --workspace E:\Widget --updated-after 2026-07-01T00:00:00Z --fields id,title,updatedAt,tags --format jsonl
 dotnet run --project ThreadShelf.Cli -- threads search "follow up" --json
 dotnet run --project ThreadShelf.Cli -- threads batch-update --file organization.json --yes --json
 dotnet run --project ThreadShelf.Mcp
 ```
+
+List/search support exact workspace paths, timezone-aware created/updated bounds, excluded IDs, and compact field projection. Long-lived MCP processes reuse an in-memory thread index; use `refresh` for a forced provider reload. Batch organization should prefer incremental `addTags` / `removeTags` and inspect each thread's before/after with `dryRun`; legacy `tags` remains a compatible explicit full replacement.
 
 See the [AI/CLI/MCP guide](docs/ai-interface.md) for tools, parameters, permissions, success/error envelopes, and safety boundaries. Normal automation should use MCP or CLI instead of editing the sidecar directly, and it must never edit Codex JSONL.
 

@@ -43,4 +43,24 @@ public sealed class ThreadShelfMcpCatalogTests
             Assert.NotNull(descriptor.Required);
         });
     }
+
+    [Fact]
+    public void AgentFacingSchemasExposeStructuredReadsAndSafeBatchUpdates()
+    {
+        var registry = new ThreadShelfMcpToolRegistry(
+            new ThreadShelfToolHandlers(new ThreadShelfCommandService()));
+        var list = registry.Descriptors.Single(descriptor =>
+            descriptor.Name == "threadshelf_list_threads");
+        Assert.Contains("workspace", list.Properties.Keys);
+        Assert.Contains("updatedAfter", list.Properties.Keys);
+        Assert.Contains("createdAfter", list.Properties.Keys);
+        Assert.Contains("excludeThreadIds", list.Properties.Keys);
+        Assert.Contains("fields", list.Properties.Keys);
+        Assert.Contains("refresh", list.Properties.Keys);
+
+        var batch = registry.Descriptors.Single(descriptor =>
+            descriptor.Name == "threadshelf_batch_update_threads");
+        Assert.Contains("dryRun", batch.Properties.Keys);
+        Assert.Empty(batch.Required);
+    }
 }

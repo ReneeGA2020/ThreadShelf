@@ -1,11 +1,17 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 
 namespace ThreadShelf;
 
-public sealed record ThreadShelfCommandSource(string Provider, string CodexHome, string SidecarPath);
+public sealed record ThreadShelfCommandSource(
+    string Provider,
+    string CodexHome,
+    string SidecarPath,
+    DateTimeOffset LoadedAt,
+    bool Cached);
 
 public sealed record ThreadShelfCommandError(
     string Code,
@@ -55,7 +61,11 @@ public sealed record ThreadMetadataDto(
 public sealed record ThreadDto(
     string Id,
     string Title,
+    DateTimeOffset? CreatedAt,
     DateTimeOffset UpdatedAt,
+    string Preview,
+    string? Description,
+    string? Status,
     string Workspace,
     string Model,
     string SourcePath,
@@ -75,12 +85,21 @@ public sealed record ListThreadsRequest
     public string Query { get; init; } = "";
     public bool? Archived { get; init; }
     public int? Limit { get; init; }
+    public string Workspace { get; init; } = "";
+    public string? UpdatedAfter { get; init; }
+    public string? UpdatedBefore { get; init; }
+    public string? CreatedAfter { get; init; }
+    public string? CreatedBefore { get; init; }
+    public IReadOnlyList<string> ExcludeThreadIds { get; init; } = [];
+    public IReadOnlyList<string> Fields { get; init; } = [];
+    public bool Refresh { get; init; }
 }
 
 public sealed record GetThreadRequest
 {
     public string? CodexHome { get; init; }
     public string ThreadId { get; init; } = "";
+    public bool Refresh { get; init; }
 }
 
 public sealed record UpdateThreadMetadataRequest
@@ -139,6 +158,9 @@ public sealed record OrganizationThreadUpdate
     public string ThreadId { get; init; } = "";
     public string? Folder { get; init; }
     public IReadOnlyList<string>? Tags { get; init; }
+    public IReadOnlyList<string>? SetTags { get; init; }
+    public IReadOnlyList<string>? AddTags { get; init; }
+    public IReadOnlyList<string>? RemoveTags { get; init; }
 }
 
 public sealed record ApplyOrganizationRequest
@@ -146,9 +168,14 @@ public sealed record ApplyOrganizationRequest
     public string? CodexHome { get; init; }
     public IReadOnlyList<TagDefinition> Tags { get; init; } = [];
     public IReadOnlyList<OrganizationThreadUpdate> Threads { get; init; } = [];
+    public bool DryRun { get; init; }
 }
 
-public sealed record ApplyOrganizationResult(int TagsUpserted, int ThreadsUpdated);
+public sealed record ApplyOrganizationResult(
+    int TagsUpserted,
+    int ThreadsUpdated,
+    bool DryRun,
+    IReadOnlyList<ThreadOrganizationChange> Changes);
 
 public sealed record NativeThreadRequest
 {
@@ -166,6 +193,9 @@ public sealed record RenameThreadRequest
 public sealed class ThreadShelfCommandService
 {
     private readonly Func<string?, IThreadShelfRepository> _repositoryFactory;
+    private readonly Dictionary<string, ThreadShelfService> _services =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _servicesGate = new();
 
     public ThreadShelfCommandService()
         : this(codexHome => new ThreadShelfRepository(codexHome))
@@ -190,7 +220,7 @@ public sealed class ThreadShelfCommandService
 
         return WithService(request.CodexHome, service =>
         {
-            var snapshot = service.Load();
+            var snapshot = service.Load(request.Refresh);
             var folder = string.IsNullOrWhiteSpace(request.Folder)
                 ? ThreadFilters.All
                 : request.Folder.Trim();
@@ -201,6 +231,35 @@ public sealed class ThreadShelfCommandService
                 threads = threads
                     .Where(thread => thread.IsArchived == request.Archived.Value)
                     .ToList();
+            }
+
+            var workspace = ThreadFilters.NormalizeProjectKey(request.Workspace);
+            if (workspace.Length > 0)
+            {
+                threads = threads
+                    .Where(thread => ThreadFilters.NormalizeProjectKey(thread.Workspace)
+                        .Equals(workspace, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
+            var updatedAfter = ParseBoundary(request.UpdatedAfter, nameof(request.UpdatedAfter));
+            var updatedBefore = ParseBoundary(request.UpdatedBefore, nameof(request.UpdatedBefore));
+            var createdAfter = ParseBoundary(request.CreatedAfter, nameof(request.CreatedAfter));
+            var createdBefore = ParseBoundary(request.CreatedBefore, nameof(request.CreatedBefore));
+            threads = threads
+                .Where(thread => updatedAfter is null || thread.UpdatedAt > updatedAfter)
+                .Where(thread => updatedBefore is null || thread.UpdatedAt < updatedBefore)
+                .Where(thread => createdAfter is null || thread.CreatedAt > createdAfter)
+                .Where(thread => createdBefore is null || thread.CreatedAt < createdBefore)
+                .ToList();
+
+            if (request.ExcludeThreadIds.Count > 0)
+            {
+                var excluded = request.ExcludeThreadIds
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Select(id => id.Trim())
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                threads = threads.Where(thread => !excluded.Contains(thread.Id)).ToList();
             }
 
             if (request.Limit is > 0)
@@ -217,10 +276,39 @@ public sealed class ThreadShelfCommandService
     public ThreadShelfCommandResult<IReadOnlyList<ThreadDto>> SearchThreads(ListThreadsRequest request) =>
         ListThreads(request);
 
+    public ThreadShelfCommandResult<IReadOnlyList<IReadOnlyDictionary<string, object?>>> ListThreadsProjected(
+        ListThreadsRequest request)
+    {
+        var result = ListThreads(request);
+        if (!result.Ok)
+        {
+            return ThreadShelfCommandResult<IReadOnlyList<IReadOnlyDictionary<string, object?>>>.Failure(
+                result.Error!.Code,
+                result.Error.Message,
+                result.Error.Details,
+                result.Error.Retryable);
+        }
+
+        try
+        {
+            var fields = NormalizeFields(request.Fields);
+            var data = result.Data!.Select(thread => ProjectThread(thread, fields)).ToList();
+            return ThreadShelfCommandResult<IReadOnlyList<IReadOnlyDictionary<string, object?>>>.Success(
+                data,
+                result.Source!,
+                result.Warnings);
+        }
+        catch (ThreadShelfValidationException ex)
+        {
+            return ThreadShelfCommandResult<IReadOnlyList<IReadOnlyDictionary<string, object?>>>.Failure(
+                "invalid_argument", ex.Message, ex.Details);
+        }
+    }
+
     public ThreadShelfCommandResult<ThreadDto> GetThread(GetThreadRequest request) =>
         WithService(request.CodexHome, service =>
         {
-            var result = service.GetThread(request.ThreadId);
+            var result = service.GetThread(request.ThreadId, request.Refresh);
             return Success(ToDto(result.Data), result.Snapshot);
         });
 
@@ -287,13 +375,21 @@ public sealed class ThreadShelfCommandService
             var updates = request.Threads?
                 .Select(update => update is null
                     ? null!
-                    : new ThreadOrganizationUpdate(update.ThreadId, update.Folder, update.Tags))
+                    : new ThreadOrganizationUpdate(
+                        update.ThreadId,
+                        update.Folder,
+                        update.Tags,
+                        update.SetTags,
+                        update.AddTags,
+                        update.RemoveTags))
                 .ToList();
-            var result = service.ApplyOrganization(request.Tags, updates);
+            var result = service.ApplyOrganization(request.Tags, updates, request.DryRun);
             return Success(
                 new ApplyOrganizationResult(
                     result.Data.TagsUpserted,
-                    result.Data.ThreadsUpdated),
+                    result.Data.ThreadsUpdated,
+                    result.Data.DryRun,
+                    result.Data.Changes),
                 result.Snapshot);
         });
 
@@ -334,9 +430,20 @@ public sealed class ThreadShelfCommandService
     {
         try
         {
-            var repository = _repositoryFactory(codexHome)
-                ?? throw new InvalidOperationException("Repository factory returned null.");
-            return action(new ThreadShelfService(repository));
+            var key = string.IsNullOrWhiteSpace(codexHome) ? "<default>" : Path.GetFullPath(codexHome);
+            ThreadShelfService service;
+            lock (_servicesGate)
+            {
+                if (!_services.TryGetValue(key, out service!))
+                {
+                    var repository = _repositoryFactory(codexHome)
+                        ?? throw new InvalidOperationException("Repository factory returned null.");
+                    service = new ThreadShelfService(repository);
+                    _services[key] = service;
+                }
+            }
+
+            return action(service);
         }
         catch (ThreadShelfValidationException ex)
         {
@@ -374,8 +481,10 @@ public sealed class ThreadShelfCommandService
             "organization_empty" or
             "organization_tag_null" or
             "organization_tag_duplicate" or
+            "organization_tag_operation_conflict" or
             "organization_thread_null" or
-            "organization_thread_duplicate" => "invalid_argument",
+            "organization_thread_duplicate" or
+            "organization_thread_empty" => "invalid_argument",
             _ => serviceCode
         };
 
@@ -403,7 +512,11 @@ public sealed class ThreadShelfCommandService
         new(
             thread.Id,
             thread.DisplayTitle,
+            thread.CreatedAt,
             thread.UpdatedAt,
+            thread.Preview,
+            thread.Description,
+            thread.Status,
             thread.Workspace,
             thread.Model,
             thread.SourcePath,
@@ -422,7 +535,95 @@ public sealed class ThreadShelfCommandService
         new(
             snapshot.SupportsNativeActions ? "app-server" : "local-files",
             snapshot.CodexHome,
-            snapshot.SidecarPath);
+            snapshot.SidecarPath,
+            snapshot.SourceLoadedAt,
+            snapshot.IsSourceCached);
+
+    private static DateTimeOffset? ParseBoundary(string? value, string name)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var text = value.Trim();
+        var hasZone = text.EndsWith("Z", StringComparison.OrdinalIgnoreCase)
+            || text.Length >= 6
+                && text[^3] == ':'
+                && text[^6] is '+' or '-';
+        if (!hasZone || !DateTimeOffset.TryParse(
+            text,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AllowWhiteSpaces,
+            out var parsed))
+        {
+            throw new ThreadShelfValidationException(
+                "invalid_argument",
+                $"{name} must be an ISO 8601 timestamp with an explicit timezone.",
+                new { name, value });
+        }
+
+        return parsed;
+    }
+
+    private static IReadOnlyList<string> NormalizeFields(IReadOnlyList<string> requested)
+    {
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "id", "title", "createdAt", "updatedAt", "preview", "description", "status",
+            "workspace", "model", "sourcePath", "isArchived", "fileSizeBytes", "originator",
+            "source", "folder", "tags", "notes", "favorite", "metadataUpdatedAt"
+        };
+        var fields = requested
+            .SelectMany(field => (field ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var invalid = fields.FirstOrDefault(field => !allowed.Contains(field));
+        if (invalid is not null)
+        {
+            throw new ThreadShelfValidationException(
+                "invalid_argument",
+                $"Unknown thread field '{invalid}'.",
+                new { field = invalid, allowed });
+        }
+
+        return fields.Count > 0 ? fields : ["id", "title", "updatedAt", "workspace", "isArchived", "tags"];
+    }
+
+    private static IReadOnlyDictionary<string, object?> ProjectThread(
+        ThreadDto thread,
+        IReadOnlyList<string> fields)
+    {
+        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var field in fields)
+        {
+            values[field] = field.ToLowerInvariant() switch
+            {
+                "id" => thread.Id,
+                "title" => thread.Title,
+                "createdat" => thread.CreatedAt,
+                "updatedat" => thread.UpdatedAt,
+                "preview" => thread.Preview,
+                "description" => thread.Description,
+                "status" => thread.Status,
+                "workspace" => thread.Workspace,
+                "model" => thread.Model,
+                "sourcepath" => thread.SourcePath,
+                "isarchived" => thread.IsArchived,
+                "filesizebytes" => thread.FileSizeBytes,
+                "originator" => thread.Originator,
+                "source" => thread.Source,
+                "folder" => thread.Metadata.Folder,
+                "tags" => thread.Metadata.Tags,
+                "notes" => thread.Metadata.Notes,
+                "favorite" => thread.Metadata.Favorite,
+                "metadataupdatedat" => thread.Metadata.UpdatedAt,
+                _ => null
+            };
+        }
+
+        return values;
+    }
 
     private static IReadOnlyList<string> WarningsFrom(ThreadShelfSnapshot snapshot) =>
         string.IsNullOrWhiteSpace(snapshot.LoadWarning)

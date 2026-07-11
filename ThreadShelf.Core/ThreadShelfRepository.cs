@@ -5,6 +5,9 @@ public sealed class ThreadShelfRepository : IThreadShelfRepository
     private readonly Func<IThreadSource> _appServerSourceFactory;
     private readonly Func<string, IThreadSource> _localSourceFactory;
     private readonly IThreadNativeActions _nativeActions;
+    private readonly object _sourceGate = new();
+    private ThreadSourceSnapshot? _cachedSource;
+    private string _cachedLoadWarning = "";
 
     public ThreadShelfRepository(string? codexHome = null)
         : this(
@@ -33,16 +36,26 @@ public sealed class ThreadShelfRepository : IThreadShelfRepository
     public string SessionIndexPath => Path.Combine(CodexHome, "session_index.jsonl");
     public string SidecarPath => Path.Combine(CodexHome, "threadshelf", "threadshelf.json");
 
-    public ThreadShelfSnapshot Load()
+    public ThreadShelfSnapshot Load(bool forceRefresh = false)
     {
-        try
+        lock (_sourceGate)
         {
-            return BuildSnapshot(_appServerSourceFactory().Load(), loadWarning: "");
-        }
-        catch (Exception ex)
-        {
-            var warning = $"Codex CLI app-server unavailable, using local JSONL files: {ex.Message}";
-            return BuildSnapshot(_localSourceFactory(CodexHome).Load(), warning);
+            var cached = _cachedSource is not null && !forceRefresh;
+            if (!cached)
+            {
+                try
+                {
+                    _cachedSource = _appServerSourceFactory().Load();
+                    _cachedLoadWarning = "";
+                }
+                catch (Exception ex)
+                {
+                    _cachedLoadWarning = $"Codex CLI app-server unavailable, using local JSONL files: {ex.Message}";
+                    _cachedSource = _localSourceFactory(CodexHome).Load();
+                }
+            }
+
+            return BuildSnapshot(_cachedSource!, _cachedLoadWarning, cached);
         }
     }
 
@@ -73,11 +86,17 @@ public sealed class ThreadShelfRepository : IThreadShelfRepository
         IReadOnlyList<CodexThread> threads) =>
         Sidecar().RenameFolder(projectKey, oldName, newName, threads);
 
-    public void SetArchived(string threadId, bool archived) =>
+    public void SetArchived(string threadId, bool archived)
+    {
         _nativeActions.SetArchived(threadId, archived);
+        InvalidateSource();
+    }
 
-    public void SetName(string threadId, string name) =>
+    public void SetName(string threadId, string name)
+    {
         _nativeActions.SetName(threadId, name);
+        InvalidateSource();
+    }
 
     public static ThreadMetadata MetadataFrom(EditDraft draft, IEnumerable<string> tags) =>
         ThreadShelfRules.MetadataFrom(draft, tags);
@@ -91,7 +110,10 @@ public sealed class ThreadShelfRepository : IThreadShelfRepository
     public static bool IsValidTagColor(string color) =>
         ThreadShelfRules.IsValidTagColor(color);
 
-    private ThreadShelfSnapshot BuildSnapshot(ThreadSourceSnapshot source, string loadWarning)
+    private ThreadShelfSnapshot BuildSnapshot(
+        ThreadSourceSnapshot source,
+        string loadWarning,
+        bool isSourceCached)
     {
         if (!string.IsNullOrWhiteSpace(source.CodexHome))
         {
@@ -119,8 +141,19 @@ public sealed class ThreadShelfRepository : IThreadShelfRepository
             LoadWarning = loadWarning,
             SupportsNativeActions = source.SupportsNativeActions,
             SupportsNativeProjectRename = false,
-            LoadedAt = DateTimeOffset.Now
+            LoadedAt = DateTimeOffset.Now,
+            SourceLoadedAt = source.LoadedAt,
+            IsSourceCached = isSourceCached
         };
+    }
+
+    private void InvalidateSource()
+    {
+        lock (_sourceGate)
+        {
+            _cachedSource = null;
+            _cachedLoadWarning = "";
+        }
     }
 
     private SidecarStore Sidecar() => new(SidecarPath);

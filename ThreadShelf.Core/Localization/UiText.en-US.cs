@@ -49,6 +49,8 @@ public static partial class UiText
             ["DeleteTag"] = "Delete tag {0}",
             ["DeletedTag"] = "Deleted tag {0}",
             ["Description"] = "Description",
+            ["Created"] = "Created",
+            ["Preview"] = "Preview",
             ["DragThreadToFolder"] = "Drag {0} to folder",
             ["DragToFolder"] = "Drag to folder",
             ["Edit"] = "Edit",

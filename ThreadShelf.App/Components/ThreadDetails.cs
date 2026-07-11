@@ -169,11 +169,24 @@ internal sealed partial class ThreadShelfController
                         () => BodyLarge(ThreadTitle(thread))
                             .TextWrapping()
                             .Flex(shrink: 0)),
-                    MetadataLine(T("Updated"), thread.UpdatedLocal),
+                    MetadataLine(T("Created"), EmptyText(thread.CreatedLocal)),
+                    MetadataLine(T("Updated"), EmptyText(thread.UpdatedLocal)),
                     MetadataLine(T("ThreadId"), thread.Id),
                     WorkspaceMetadataLine(thread.Workspace, setStatus),
                     MetadataLine(T("Model"), EmptyText(thread.Model)),
-                    MetadataLine(T("State"), thread.IsArchived ? T("Archived") : T("Unarchived")),
+                    MetadataLine(
+                        T("State"),
+                        string.IsNullOrWhiteSpace(thread.Status)
+                            ? thread.IsArchived ? T("Archived") : T("Unarchived")
+                            : thread.Status),
+                    If(
+                        string.IsNullOrWhiteSpace(thread.Preview),
+                        () => Empty(),
+                        () => MetadataLine(T("Preview"), thread.Preview)),
+                    If(
+                        string.IsNullOrWhiteSpace(thread.Description),
+                        () => Empty(),
+                        () => MetadataLine(T("Description"), thread.Description!)),
                     Border(Empty()).Height(1).Background(Theme.DividerStroke).Margin(0, 4, 0, 4),
                     CheckBox(
                             draft.Favorite,

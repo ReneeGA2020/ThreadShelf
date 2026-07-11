@@ -156,6 +156,11 @@ public sealed class CodexInteractiveLauncherTests : IDisposable
 
         Assert.Equal(_root, index.CodexHome);
         Assert.Equal(4, index.Threads.Count);
+        var first = index.Threads[0];
+        Assert.StartsWith("Preview for ", first.Preview);
+        Assert.Equal("Fake thread description", first.Description);
+        Assert.Equal("idle", first.Status);
+        Assert.NotNull(first.CreatedAt);
     }
 
     [Fact]
